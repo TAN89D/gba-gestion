@@ -1,0 +1,6 @@
+import test from 'node:test';import assert from 'node:assert/strict';import worker from '../worker.js';import{empty}from'../src/domain.js';
+const token='a-test-token-with-more-than-32-characters';
+const req=(method='GET',body,secret=token)=>new Request('https://gba.example/api/backup',{method,headers:{Authorization:'Bearer '+secret,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});
+test('cloud indisponible sans configuration et fermé sans clé',async()=>{assert.equal((await worker.fetch(req(),{})).status,503);assert.equal((await worker.fetch(req('GET',null,'wrong'),{DB:{},BACKUP_TOKEN:token})).status,401)});
+test('cloud refuse les sauvegardes invalides et les écrasements concurrents',async()=>{const env={BACKUP_TOKEN:token,DB:{prepare:()=>({bind:()=>({run:async()=>({meta:{changes:0}})})})}};assert.equal((await worker.fetch(req('PUT',{revision:0,data:{}}),env)).status,400);assert.equal((await worker.fetch(req('PUT',{revision:1,data:empty()}),env)).status,409)});
+test('cloud lecture privée renvoie les données et la révision',async()=>{const env={BACKUP_TOKEN:token,DB:{prepare:()=>({first:async()=>({revision:2,payload:JSON.stringify(empty()),updated_at:'2026-10-06'})})}};const res=await worker.fetch(req(),env);assert.equal(res.status,200);assert.equal((await res.json()).revision,2)});
