@@ -275,7 +275,7 @@ function Material({ requests, data, reload }) {
   return <>{groups.map(([title, rows]) => <React.Fragment key={title}><h2>{title} ({rows.length})</h2><div className="admin-queue">{rows.length ? rows.map((r) => <RequestAdminCard key={r.id} r={r} data={data} reload={reload} />) : <p className="admin-empty">Aucune demande.</p>}</div></React.Fragment>)}</>;
 }
 function Cashboxes({ data }) {
-  return <div className="admin-queue">{data.accounts.map((a) => {
+  return <><p className="admin-note"><b>Pour donner un budget à un chef de chantier :</b> ouvrez l’application sur votre téléphone, touchez « Chantiers », ouvrez le chantier, puis « Créer la caisse du chef de chantier » et « Donner un budget ». Les comptes sont tenus par votre téléphone ; cette page les affiche.</p><div className="admin-queue">{data.accounts.map((a) => {
     const c = cashbox(data, a.id);
     const holder = data.employees.find((e) => e.id === a.holderId)?.name;
     const site = data.projects.find((p) => p.id === a.projectId)?.name;
@@ -289,7 +289,7 @@ function Cashboxes({ data }) {
       <div className="admin-line"><span>Dépenses personnelles</span><b>{money(c.personal)}</b></div>
       {c.back > 0 && <div className="admin-line"><span>Rendu / retiré</span><b>{money(c.back)}</b></div>}
     </div>;
-  })}</div>;
+  })}</div></>;
 }
 function Folders({ data, entries }) {
   const [id, setId] = useState(data.projects[0]?.id || '');
