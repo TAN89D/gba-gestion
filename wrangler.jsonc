@@ -1,1 +1,1 @@
-{"name":"gba-gestion","compatibility_date":"2026-10-06","main":"worker.js","assets":{"directory":"./dist","binding":"ASSETS","not_found_handling":"single-page-application","run_worker_first":["/api/*"]}}
+{"name":"gba-gestion","compatibility_date":"2026-10-06","main":"worker.js","assets":{"directory":"./dist","binding":"ASSETS","not_found_handling":"single-page-application","run_worker_first":["/api/*"]},"d1_databases":[{"binding":"DB","database_name":"gba-gestion","database_id":"a6d0b7c3-555e-4d5b-89c3-134c1682fcef"}]}
