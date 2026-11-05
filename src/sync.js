@@ -5,7 +5,7 @@ import { TABLES } from './domain.js';
 const KEY = 'gba-sync';
 export const SYNC_LIMIT = 1750000;
 const RETRY_MS = 60000;
-const DEBOUNCE_MS = 3000;
+const DEBOUNCE_MS = 1500;
 
 export function readSync() {
   try { return JSON.parse(localStorage.getItem(KEY)) || { enabled: false }; } catch { return { enabled: false }; }

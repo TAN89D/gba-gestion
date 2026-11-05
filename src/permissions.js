@@ -49,7 +49,8 @@ export function viewFor(state, user) {
   const projects = state.projects.filter((p) => assigned.has(p.id));
 
   if (user.role === 'gestionnaire') {
-    view.projects = projects.map((p) => pick(p, [...PROJECT_BASE, 'budget']));
+    // Jamais le budget général ni le contrat : seulement le budget confié par la direction.
+    view.projects = projects.map((p) => pick(p, [...PROJECT_BASE, 'managerBudget']));
     view.employees = state.employees.map((x) => pick(x, FIELDS.employees));
     view.suppliers = state.suppliers.map((x) => pick(x, FIELDS.suppliers));
     view.materials = state.materials.map((x) => pick(x, FIELDS.materials));

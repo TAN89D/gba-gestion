@@ -216,7 +216,20 @@ test('entrées invalides refusées lors de la création d’un compte', async ()
   await call(env, 'POST', '/api/users', { session: o.cookie, body: { name: 'A', role: 'chef', email: 'a@gmail.com' } });
   assert.equal((await call(env, 'POST', '/api/users', { session: o.cookie, body: { name: 'B', role: 'chef', email: 'A@gmail.com' } })).status, 409);
 });
+const save2 = (s, data) => apply(s, { type: 'save', table: 'projects', data });
 const SECRETS = ['987654', '111222', 'CLIENT-SECRET', 'FACTURE-SECRETE', '777888', 'HORS-CHANTIER', 'LOYER-SECRET', 'NOTE-AUTRE'];
+test('gestionnaire : le budget confié, jamais le budget général ni les devis', () => {
+  let s = sample();
+  s = save2(s, { id: 'p1', name: 'Villa', clientId: 'c', contractAmount: 987654, budget: 500000, managerBudget: 40000 });
+  s = apply(s, { type: 'save', table: 'quotes', data: { id: 'dv', clientId: 'c', projectId: 'p1', lines: [{ description: 'DEVIS-SECRET', quantity: 1, unitPrice: 6554625 }] } });
+  const v = viewFor(s, { role: 'gestionnaire', projectIds: ['p1'] });
+  const text = JSON.stringify(v);
+  assert.equal(v.projects[0].managerBudget, 40000);
+  assert.equal(v.projects[0].budget, undefined);
+  for (const secret of ['500000', '987654', '6554625', 'DEVIS-SECRET', 'contractAmount', '"budget"']) assert.equal(text.includes(secret), false, secret);
+  assert.equal(v.quotes.length, 0);
+  for (const role of ['chef', 'ouvrier']) assert.equal(JSON.stringify(viewFor(s, { role, projectIds: ['p1'], employeeId: 'e1' })).includes('managerBudget'), false, role);
+});
 test('gestionnaire : seulement ses chantiers, jamais la caisse ni les marges', () => {
   const s = sample();
   const v = viewFor(s, { role: 'gestionnaire', projectIds: ['p1'] });

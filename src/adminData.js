@@ -34,7 +34,7 @@ export function projectRows(s) {
     return {
       id: p.id, name: p.name, client: named(s.clients, p.clientId), status: p.status || '',
       contract: Number(p.contractAmount) || 0, billed: v.billed, received: v.received, toCollect: v.due,
-      cost: v.cost, forecast: v.forecast, budget: v.budget, used: v.budget > 0 ? Math.round((v.forecast / v.budget) * 100) : null, margin: v.margin,
+      cost: v.cost, forecast: v.forecast, budget: v.budget, managerBudget: Number(p.managerBudget) || 0, used: v.budget > 0 ? Math.round((v.forecast / v.budget) * 100) : null, margin: v.margin,
     };
   });
 }

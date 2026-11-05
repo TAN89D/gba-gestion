@@ -1,5 +1,10 @@
 .member-screen{max-width:520px;margin:0 auto;padding:24px 16px 48px}
 .member-with-tabs{padding-bottom:110px}
+.member-screen,.member-screen *{min-width:0}
+.member-link{display:block;width:100%;padding:0;min-height:0;border:0;background:none;color:inherit;font:inherit;text-align:left;font-weight:400}
+.member-link .member-card{width:100%}
+.member-back{display:inline-flex;align-items:center;gap:6px;min-height:44px;margin-bottom:6px;padding:8px 12px;border:1px solid #cfd8e6;border-radius:9px;background:#fff;color:#142e53;font-weight:600}
+.member-card>div{flex:1;min-width:0;overflow-wrap:anywhere}
 .member-screen h1{margin:8px 0;font-size:24px}
 .member-screen h2{margin:22px 0 10px;font-size:19px}
 .member-brand{display:flex;align-items:center;gap:12px;margin-bottom:16px}
@@ -15,8 +20,8 @@
 .member-card b{display:block;font-size:18px}
 .member-card small{color:#5b6b82}
 .member-tag{display:inline-block;margin-top:4px;padding:2px 10px;border-radius:12px;background:#e8f1fb;color:#0a4f99;font-size:13px}
-.member-tiles{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.member-tile{display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:16px;min-height:118px;text-align:left;border:1px solid #dde4ee;border-radius:14px;background:#fff;color:#142e53}
+.member-tiles{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.member-tile{width:100%;display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:16px;min-height:118px;text-align:left;border:1px solid #dde4ee;border-radius:14px;background:#fff;color:#142e53}
 .member-tile svg{color:#0066cc}
 .member-tile b{font-size:21px;line-height:1.2;overflow-wrap:anywhere}
 .member-tile small{color:#5b6b82;font-size:13px}

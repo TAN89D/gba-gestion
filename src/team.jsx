@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import qrcode from 'qrcode-generator';
-import { HardHat, ListChecks, Notebook, Receipt, Package, SignOut, Backspace, GoogleLogo, UserPlus, QrCode, House, Users, CheckCircle, Warning, Camera, Plus, Money } from '@phosphor-icons/react';
+import { HardHat, ListChecks, Notebook, Receipt, Package, SignOut, Backspace, GoogleLogo, UserPlus, QrCode, House, Users, CheckCircle, Warning, Camera, Plus, Money, ArrowLeft } from '@phosphor-icons/react';
 import { ROLES } from './permissions.js';
 import { money, fmtDate } from './domain.js';
 import { readSync, counts, transferAll } from './sync.js';
@@ -196,6 +196,8 @@ function Empty({ text }) { return <p className="info">{text}</p>; }
 const paidOn = (data, taskId) => data.teamPayments.filter((p) => p.taskId === taskId).reduce((n, p) => n + Number(p.amount || 0), 0);
 const leftOn = (data, t) => Math.max(0, Number(t.agreedAmount || 0) - paidOn(data, t.id));
 const sumOf = (rows, f) => rows.reduce((n, x) => n + f(x), 0);
+// Ce qui consomme le budget confié : les dépenses du chantier et les paiements de l'équipe.
+const usedOn = (data, projectId) => sumOf(data.expenses.filter((x) => x.projectId === projectId), (x) => Number(x.amount || 0)) + sumOf(data.teamPayments.filter((x) => x.projectId === projectId), (x) => Number(x.amount || 0));
 function PayLine({ agreed, paid, left }) {
   const pct = agreed > 0 ? Math.min(100, Math.round((paid / agreed) * 100)) : 0;
   return <div className="member-pay"><div className="member-bar"><i style={{ width: pct + '%' }} /></div><div className="member-pay-row"><span>Payé <b>{money(paid)}</b></span><span>Reste <b>{money(left)}</b></span></div><small>Convenu : {money(agreed)}</small></div>;
@@ -218,7 +220,7 @@ function PayTab({ data }) {
     })}
   </>;
 }
-function HomeTab({ user, data, go }) {
+function HomeTab({ user, data, go, openSite }) {
   const active = (rows) => rows.filter((x) => x.status !== 'Terminé').length;
   if (user.role === 'ouvrier') {
     return <>
@@ -233,21 +235,25 @@ function HomeTab({ user, data, go }) {
     </>;
   }
   if (user.role === 'gestionnaire') {
-    const spent = data.expenses.reduce((n, x) => n + Number(x.amount || 0), 0);
     const paid = data.teamPayments.reduce((n, x) => n + Number(x.amount || 0), 0);
     const agreed = data.tasks.reduce((n, x) => n + Number(x.agreedAmount || 0), 0);
+    const given = sumOf(data.projects, (p) => Number(p.managerBudget || 0));
+    const usedTotal = sumOf(data.projects, (p) => usedOn(data, p.id));
     return <>
       <div className="member-tiles">
+        <Tile Icon={Money} label="Budget confié" value={money(given)} onClick={() => go('projects')} />
+        <Tile Icon={Receipt} label="Utilisé" value={money(usedTotal)} onClick={() => go('expenses')} />
+        <Tile Icon={Money} label="Reste du budget" value={money(given - usedTotal)} onClick={() => go('projects')} />
         <Tile Icon={HardHat} label="Chantiers" value={data.projects.length} onClick={() => go('projects')} />
-        <Tile Icon={Receipt} label="Dépenses" value={money(spent)} onClick={() => go('expenses')} />
         <Tile Icon={Users} label="Reste à payer à l’équipe" value={money(Math.max(0, agreed - paid))} onClick={() => go('team')} />
         <Tile Icon={Package} label="Commandes en cours" value={data.orders.filter((o) => o.status !== 'Reçu').length} onClick={() => go('orders')} />
       </div>
-      <h2>Budget des chantiers</h2>
+      <h2>Budget par chantier</h2>
       {data.projects.map((p) => {
-        const used = data.expenses.filter((x) => x.projectId === p.id).reduce((n, x) => n + Number(x.amount || 0), 0);
-        const pct = p.budget > 0 ? Math.round((used / p.budget) * 100) : 0;
-        return <div className="member-card member-budget" key={p.id}><div><b>{p.name}</b><small>{money(used)} sur {money(p.budget)}</small><div className="member-bar"><i style={{ width: Math.min(pct, 100) + '%' }} className={pct > 100 ? 'over' : ''} /></div></div></div>;
+        const used = usedOn(data, p.id);
+        const budget = Number(p.managerBudget || 0);
+        const pct = budget > 0 ? Math.round((used / budget) * 100) : 0;
+        return <button type="button" className="member-link" key={p.id} onClick={() => openSite(p.id)}><div className="member-card member-budget"><div><b>{p.name}</b><small>{budget > 0 ? money(used) + ' utilisés sur ' + money(budget) : money(used) + ' utilisés · aucun budget confié'}</small><div className="member-bar"><i style={{ width: Math.min(pct, 100) + '%' }} className={pct > 100 ? 'over' : ''} /></div></div></div></button>;
       })}
       <h2>Actions</h2>
       <div className="member-soons"><Soon Icon={Plus} label="Ajouter une dépense" /><Soon Icon={Camera} label="Scanner une facture" /></div>
@@ -264,14 +270,40 @@ function HomeTab({ user, data, go }) {
     <div className="member-soons"><Soon Icon={Notebook} label="Note de chantier" /><Soon Icon={Warning} label="Signaler un problème" /><Soon Icon={Camera} label="Scanner une facture" /></div>
   </>;
 }
-function TabContent({ tab, user, data, go }) {
+function SiteDetail({ project, data, user, onBack }) {
+  const onSite = (x) => x.projectId === project.id;
+  const expenses = data.expenses.filter(onSite);
+  const tasks = data.tasks.filter(onSite);
+  const orders = data.orders.filter(onSite);
+  const journal = data.journal.filter(onSite);
+  const spent = usedOn(data, project.id);
+  const budget = Number(project.managerBudget || 0);
+  const showMoney = user.role === 'gestionnaire';
+  const pct = budget > 0 ? Math.round((spent / budget) * 100) : 0;
+  const part = (title, rows, render) => (rows.length ? <section key={title}><h2>{title}</h2>{rows.map(render)}</section> : null);
+  return <>
+    <button type="button" className="member-back" onClick={onBack}><ArrowLeft size={20} /> Retour</button>
+    <div className="member-card member-budget"><div>
+      <small>{[project.address, project.status].filter(Boolean).join(' · ')}</small>
+      {showMoney && (budget > 0
+        ? <><b>Reste : {money(budget - spent)}</b><small>{money(spent)} utilisés sur {money(budget)} confiés ({pct} %)</small><div className="member-bar"><i style={{ width: Math.min(pct, 100) + '%' }} className={pct > 100 ? 'over' : ''} /></div></>
+        : <><b>{money(spent)} utilisés</b><small>Aucun budget ne vous a encore été confié sur ce chantier.</small></>)}
+    </div></div>
+    {part('Tâches', tasks, (t) => <Card key={t.id} Icon={ListChecks} title={t.description} sub={[nameOf(data.employees, t.employeeId), user.role === 'ouvrier' ? 'Reste à payer : ' + money(leftOn(data, t)) : showMoney ? 'Payé ' + money(paidOn(data, t.id)) + ' sur ' + money(t.agreedAmount) : ''].filter(Boolean).join(' · ')} tag={t.status} />)}
+    {part('Dépenses', expenses, (x) => <Card key={x.id} Icon={Receipt} title={x.description} sub={fmtDate(x.date)} tag={money(x.amount)} />)}
+    {part('Commandes', orders, (o) => <Card key={o.id} Icon={Package} title={o.description || o.number} sub={[o.number, nameOf(data.suppliers, o.supplierId)].filter(Boolean).join(' · ')} tag={o.status} />)}
+    {part('Journal', journal, (j) => <Card key={j.id} Icon={Notebook} title={j.note} sub={fmtDate(j.date)} tag={j.kind} />)}
+    {!tasks.length && !expenses.length && !orders.length && !journal.length && <Empty text="Rien n’est encore enregistré sur ce chantier." />}
+  </>;
+}
+function TabContent({ tab, user, data, go, openSite }) {
   const list = (rows, empty, render) => (rows.length ? rows.map(render) : <Empty text={empty} />);
-  if (tab === 'home') return <HomeTab user={user} data={data} go={go} />;
+  if (tab === 'home') return <HomeTab user={user} data={data} go={go} openSite={openSite} />;
   if (tab === 'pay') return <PayTab data={data} />;
   if (tab === 'tasks' && user.role === 'chef') return list(data.tasks, 'Aucune tâche sur vos chantiers.', (t) => <Card key={t.id} Icon={ListChecks} title={t.description} sub={[nameOf(data.employees, t.employeeId), nameOf(data.projects, t.projectId)].filter(Boolean).join(' · ')} tag={t.status} />);
   if (tab === 'crew') return list(data.employees, 'Aucun ouvrier sur vos chantiers.', (e) => <Card key={e.id} Icon={Users} title={e.name} sub={[e.role, e.phone].filter(Boolean).join(' · ')} tag={data.tasks.filter((t) => t.employeeId === e.id && t.status !== 'Terminé').length + ' tâche(s) en cours'} />);
   if (tab === 'tasks') return list(data.tasks, 'Aucune tâche ne vous est attribuée.', (t) => <Card key={t.id} Icon={ListChecks} title={t.description} sub={[nameOf(data.projects, t.projectId), 'Reste à payer : ' + money(leftOn(data, t))].filter(Boolean).join(' · ')} tag={t.status} />);
-  if (tab === 'projects') return list(data.projects, 'Aucun chantier ne vous est encore attribué.', (p) => <Card key={p.id} Icon={HardHat} title={p.name} sub={p.address} tag={p.status} />);
+  if (tab === 'projects') return list(data.projects, 'Aucun chantier ne vous est encore attribué.', (p) => <button type="button" className="member-link" key={p.id} onClick={() => openSite(p.id)}><Card Icon={HardHat} title={p.name} sub={p.address} tag={p.status} /></button>);
   if (tab === 'journal') return list(data.journal, 'Aucune note pour le moment.', (j) => <Card key={j.id} Icon={Notebook} title={j.note} sub={when(j, data.projects)} tag={j.kind} />);
   if (tab === 'expenses') return list(data.expenses, 'Aucune dépense pour le moment.', (x) => <Card key={x.id} Icon={Receipt} title={x.description} sub={when(x, data.projects)} tag={money(x.amount)} />);
   if (tab === 'team') {
@@ -285,16 +317,22 @@ function TabContent({ tab, user, data, go }) {
 }
 function MemberSpace({ user, data, onRefresh, onLogout }) {
   const [tab, setTab] = useState('home');
+  const [site, setSite] = useState(null);
   const tabs = TABS[user.role] || TABS.ouvrier;
-  const title = tabs.find(([k]) => k === tab)?.[1];
+  const open = (k) => { setTab(k); setSite(null); window.scrollTo(0, 0); };
+  const openSite = (id) => { setSite(id); window.scrollTo(0, 0); };
+  const project = site && data?.projects.find((p) => p.id === site);
+  const title = project ? project.name : tabs.find(([k]) => k === tab)?.[1];
   return (
     <>
       <main className="member-screen member-with-tabs">
-        <Brand title={tab === 'home' ? 'Bonjour ' + user.name : title} subtitle={ROLES[user.role]} />
-        {data ? <TabContent tab={tab} user={user} data={data} go={setTab} /> : <Empty text="Les données de l’entreprise ne sont pas encore disponibles." />}
-        {tab === 'home' && <div className="chips member-actions"><button onClick={onRefresh}>Actualiser</button><button onClick={onLogout}><SignOut /> Se déconnecter</button></div>}
+        <Brand title={!project && tab === 'home' ? 'Bonjour ' + user.name : title} subtitle={ROLES[user.role]} />
+        {!data && <Empty text="Les données de l’entreprise ne sont pas encore disponibles." />}
+        {project && <SiteDetail project={project} data={data} user={user} onBack={() => setSite(null)} />}
+        {data && !project && <TabContent tab={tab} user={user} data={data} go={open} openSite={openSite} />}
+        {tab === 'home' && !project && <div className="chips member-actions"><button onClick={onRefresh}>Actualiser</button><button onClick={onLogout}><SignOut /> Se déconnecter</button></div>}
       </main>
-      <nav className="bottom">{tabs.map(([k, label, Icon]) => <button key={k} className={tab === k ? 'active' : ''} onClick={() => { setTab(k); window.scrollTo(0, 0); }}><Icon size={25} weight={tab === k ? 'fill' : 'regular'} /><span>{label}</span></button>)}</nav>
+      <nav className="bottom">{tabs.map(([k, label, Icon]) => <button key={k} className={tab === k && !site ? 'active' : ''} onClick={() => open(k)}><Icon size={25} weight={tab === k && !site ? 'fill' : 'regular'} /><span>{label}</span></button>)}</nav>
     </>
   );
 }

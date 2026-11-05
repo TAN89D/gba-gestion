@@ -101,6 +101,7 @@ function Projects({ data }) {
     { label: 'Reste facturé', num: true, render: (r) => money(r.toCollect) },
     { label: 'Coût engagé', num: true, render: (r) => money(r.forecast) },
     { label: 'Budget', render: (r) => (r.used === null ? 'Non défini' : <>{money(r.budget)} · {r.used} %<div className="admin-bar"><i style={{ width: Math.min(r.used, 100) + '%' }} className={r.used > 100 ? 'over' : ''} /></div></>) },
+    { label: 'Confié au gestionnaire', num: true, render: (r) => (r.managerBudget ? money(r.managerBudget) : '—') },
     { label: 'Marge', num: true, render: (r) => <b style={{ color: r.margin < 0 ? '#c62828' : undefined }}>{money(r.margin)}</b> },
   ]} />;
 }
