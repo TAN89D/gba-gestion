@@ -1,4 +1,19 @@
 import { TABLES } from './domain.js';
+import { cashbox, heldBy } from './cashbox.js';
+
+// Résumé des caisses confiées à ce compte (via sa fiche dans l'équipe) : montants et dernières sorties.
+function ownCashboxes(state, user) {
+  return heldBy(state, user.employeeId).map((a) => {
+    const c = cashbox(state, a.id);
+    const site = (id) => state.projects.find((p) => p.id === id)?.name || '';
+    return {
+      id: a.id, name: a.name, projectId: a.projectId || '', projectName: site(a.projectId),
+      opening: c.opening, received: c.received, back: c.back, site: c.site, siteByCategory: c.siteByCategory,
+      otherSites: c.otherSites, company: c.company, companyTotal: c.companyTotal, personal: c.personal, spent: c.spent, balance: c.balance,
+      recent: c.out.slice(0, 40).map((r) => ({ id: r.id, date: r.date, label: r.label, amount: r.amount, scope: r.scope, category: r.category, site: r.scope === 'Chantier' ? site(r.projectId) : '' })),
+    };
+  });
+}
 
 export const ROLES = {
   direction: 'Direction',
@@ -63,6 +78,7 @@ export function viewFor(state, user) {
     view.deliveries = state.deliveries.filter(anySite).map((x) => pick(x, FIELDS.deliveries));
     view.journal = state.journal.filter(anySite).map((x) => pick(x, FIELDS.journal));
     view.accounts = state.accounts.map((x) => pick(x, ['id', 'name']));
+    view.cashboxes = ownCashboxes(state, user);
   } else if (user.role === 'chef') {
     // Suivi du terrain sur ses chantiers : tâches, équipe et journal, sans aucun montant.
     const tasks = state.tasks.filter(onSite);
@@ -71,6 +87,8 @@ export function viewFor(state, user) {
     view.tasks = tasks.map((x) => pick(x, FIELDS.tasksChef));
     view.employees = state.employees.filter((x) => crew.has(x.id)).map((x) => pick(x, FIELDS.employeesChef));
     view.journal = state.journal.filter(onSite).map((x) => pick(x, FIELDS.journal));
+    // Le chef voit les montants de sa propre caisse uniquement, jamais ceux du chantier.
+    view.cashboxes = ownCashboxes(state, user);
   } else if (user.role === 'ouvrier') {
     // L'ouvrier voit toutes ses propres tâches et ce qui lui a été payé, sur tous ses chantiers.
     const own = user.employeeId ? state.tasks.filter((x) => x.employeeId === user.employeeId) : [];

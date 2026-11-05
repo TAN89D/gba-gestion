@@ -24,7 +24,7 @@ function sample() {
 }
 function makeEnv() {
   const db = new DatabaseSync(':memory:');
-  for (const f of ['0001_workspace.sql', '0002_team.sql', '0003_entries.sql']) db.exec(readFileSync(new URL('../migrations/' + f, import.meta.url), 'utf8'));
+  for (const f of ['0001_workspace.sql', '0002_team.sql', '0003_entries.sql', '0004_requests.sql']) db.exec(readFileSync(new URL('../migrations/' + f, import.meta.url), 'utf8'));
   const wrap = (sql, args = []) => ({
     bind: (...a) => wrap(sql, a),
     first: async () => db.prepare(sql).get(...args) ?? null,

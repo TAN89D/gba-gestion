@@ -1,9 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { Camera, ArrowLeft, FileText } from '@phosphor-icons/react';
 import { api } from './team.jsx';
-import { fmtDate, money, today, uid } from './domain.js';
+import { fmtDate, money, today, uid, EXPENSE_CATEGORIES } from './domain.js';
 import { ENTRY_LABELS, STATUS_LABELS } from './entries.js';
 import { reportHtml } from './report.js';
+import { Thread } from './requests.jsx';
+
+const SCOPES = [['Chantier', 'Pour le chantier'], ['Entreprise', 'Pour l’entreprise'], ['Personnel', 'Dépense personnelle']];
 
 async function compressPhoto(file) {
   const url = URL.createObjectURL(file);
@@ -24,7 +27,9 @@ export function EntryForm({ action, data, onDone, onCancel }) {
   const { type, projectId: initial } = action;
   const kind = { scan: 'expense', need: 'incident', done: 'photo' }[type] || type;
   const [projectId, setProjectId] = useState(initial || (data.projects.length === 1 ? data.projects[0].id : ''));
-  const [form, setForm] = useState({ id: uid(), date: today(), description: '', amount: '', category: 'Matériaux', method: 'Espèces', taskId: '', note: type === 'done' ? 'Travail fait' : '' });
+  const boxes = data.cashboxes || [];
+  const boxFor = (site) => (boxes.find((b) => b.projectId === site) || boxes[0])?.id || '';
+  const [form, setForm] = useState({ id: uid(), date: today(), description: '', amount: '', scope: 'Chantier', accountId: boxFor(initial), category: 'Matériaux', method: 'Espèces', taskId: '', note: type === 'done' ? 'Travail fait' : '' });
   const [photo, setPhoto] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -49,7 +54,7 @@ export function EntryForm({ action, data, onDone, onCancel }) {
     setBusy(true); setError('');
     try {
       // Le même identifiant est réutilisé si l'on renvoie : jamais de doublon.
-      await api('/api/entries', { method: 'POST', body: { kind, projectId, id: form.id, date: form.date, description: form.description, amount: form.amount === '' ? undefined : Number(form.amount), category: form.category, method: form.method, taskId: form.taskId, note: form.note, type: type === 'need' ? 'Besoin de matériel' : 'Problème', photo: photo || undefined } });
+      await api('/api/entries', { method: 'POST', body: { kind, projectId, id: form.id, date: form.date, description: form.description, amount: form.amount === '' ? undefined : Number(form.amount), scope: form.scope, accountId: form.accountId || undefined, category: form.category, method: form.method, taskId: form.taskId, note: form.note, type: type === 'need' ? 'Besoin de matériel' : 'Problème', photo: photo || undefined } });
     } catch (x) {
       setError(x.status === 0 ? 'Pas de réseau : l’envoi n’a pas pu être confirmé. Touchez « Envoyer » à nouveau quand la connexion revient : il ne sera pas compté deux fois.' : x.message);
       setBusy(false);
@@ -61,8 +66,10 @@ export function EntryForm({ action, data, onDone, onCancel }) {
   return <form className="member-form" onSubmit={submit}>
     <button type="button" className="member-back" onClick={onCancel}><ArrowLeft size={20} /> Retour</button>
     <h2>{FORM_TITLES[type]}</h2>
-    <label>Chantier<select required value={projectId} onChange={(e) => { setProjectId(e.target.value); set('taskId', ''); }}><option value="">Choisir…</option>{data.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
-    {kind === 'expense' && <><label>Désignation<input required maxLength="300" value={form.description} onChange={(e) => set('description', e.target.value)} /></label><label>Montant (F)<input required inputMode="numeric" type="number" min="1" step="1" value={form.amount} onChange={(e) => set('amount', e.target.value)} /></label><label>Catégorie<select value={form.category} onChange={(e) => set('category', e.target.value)}>{['Matériaux', 'Transport', 'Sous-traitance', 'Autres'].map((x) => <option key={x}>{x}</option>)}</select></label></>}
+    <label>Chantier<select required value={projectId} onChange={(e) => { setProjectId(e.target.value); set('taskId', ''); if (boxes.length) set('accountId', boxFor(e.target.value)); }}><option value="">Choisir…</option>{data.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+    {kind === 'expense' && <><label>Désignation<input required maxLength="300" value={form.description} onChange={(e) => set('description', e.target.value)} /></label><label>Montant (F)<input required inputMode="numeric" type="number" min="1" step="1" value={form.amount} onChange={(e) => set('amount', e.target.value)} /></label><label>Cette dépense est<select value={form.scope} onChange={(e) => set('scope', e.target.value)}>{SCOPES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></label><label>Catégorie<select value={form.category} onChange={(e) => set('category', e.target.value)}>{EXPENSE_CATEGORIES.map((x) => <option key={x}>{x}</option>)}</select></label></>}
+    {['expense', 'teamPayment'].includes(kind) && boxes.length > 1 && <label>Caisse utilisée<select value={form.accountId} onChange={(e) => set('accountId', e.target.value)}>{boxes.map((b) => <option key={b.id} value={b.id}>{b.name} · reste {money(b.balance)}</option>)}</select></label>}
+    {['expense', 'teamPayment'].includes(kind) && boxes.length === 1 && <p className="subtle">L’argent sort de votre caisse « {boxes[0].name} » (reste {money(boxes[0].balance)}).</p>}
     {kind === 'teamPayment' && <><label>Tâche et ouvrier<select required value={form.taskId} onChange={(e) => set('taskId', e.target.value)}><option value="">Choisir…</option>{siteTasks.map((t) => <option key={t.id} value={t.id} disabled={left(t) <= 0}>{t.description} · {data.employees?.find((x) => x.id === t.employeeId)?.name || ''} · reste {money(left(t))}</option>)}</select></label>{projectId && !siteTasks.length && <p className="info">Aucune tâche sur ce chantier. La direction doit d’abord la créer.</p>}<label>Montant versé (F)<input required inputMode="numeric" type="number" min="1" step="1" value={form.amount} onChange={(e) => set('amount', e.target.value)} /></label></>}
     {['expense', 'teamPayment'].includes(kind) && <><label>Mode de paiement<select value={form.method} onChange={(e) => set('method', e.target.value)}>{['Espèces', 'Virement', 'Orange Money', 'Moov Money', 'Chèque'].map((x) => <option key={x}>{x}</option>)}</select></label><label>Date<input required type="date" value={form.date} onChange={(e) => set('date', e.target.value)} /></label></>}
     {kind === 'incident' && <label>{type === 'need' ? 'De quoi avez-vous besoin ?' : 'Que se passe-t-il ?'}<textarea required rows="4" maxLength="2000" value={form.note} onChange={(e) => set('note', e.target.value)} /></label>}
@@ -109,5 +116,5 @@ export function ReportButton({ company, project, data, entries, finance }) {
 export function MyEntries({ entries, title = 'Mes saisies et le suivi' }) {
   const rows = entries.filter((e) => e.kind !== 'photo');
   if (!rows.length) return null;
-  return <section><h2>{title}</h2>{rows.slice(0, 30).map((e) => <div className="member-card member-budget" key={e.id}><div><b>{e.data.description || e.data.note || ENTRY_LABELS[e.kind]}</b><small>{ENTRY_LABELS[e.kind]} · {fmtDate(e.data.date)} · {e.userName}{e.data.amount ? ' · ' + money(e.data.amount) : ''}</small><div><span className={'member-tag' + (e.status === 'rejected' ? ' member-tag-bad' : '')}>{STATUS_LABELS[e.status]}</span></div>{e.reason && <small>Motif : {e.reason}</small>}</div></div>)}</section>;
+  return <section><h2>{title}</h2>{rows.slice(0, 30).map((e) => <div className="member-card member-budget" key={e.id}><div><b>{e.data.description || e.data.note || ENTRY_LABELS[e.kind]}</b><small>{ENTRY_LABELS[e.kind]} · {fmtDate(e.data.date)} · {e.userName}{e.data.amount ? ' · ' + money(e.data.amount) : ''}</small><div><span className={'member-tag' + (e.status === 'rejected' ? ' member-tag-bad' : '')}>{e.status === 'open' && e.messages > 0 ? 'En cours' : STATUS_LABELS[e.status]}</span></div>{e.reason && <small>{e.kind === 'incident' ? 'Réponse : ' : 'Motif : '}{e.reason}</small>}{e.kind === 'incident' && <Thread id={e.id} count={e.messages} />}</div></div>)}</section>;
 }

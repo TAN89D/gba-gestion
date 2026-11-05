@@ -5,6 +5,7 @@ export const money=n=>new Intl.NumberFormat('fr-FR').format(Math.round(Number(n)
 export const moneyExact=n=>new Intl.NumberFormat('fr-FR',{maximumFractionDigits:2}).format(Number(n)||0)+' F';
 export const fmtDate=d=>/^\d{4}-\d{2}-\d{2}/.test(String(d||''))?d.slice(8,10)+'/'+d.slice(5,7)+'/'+d.slice(0,4):String(d||'');
 export function empty(){return {schema:3,app:'GBA Gestion Web',settings:{company:'GÉNÉRALE BTP AFRIQUE',address:'Bamako, Mali',phone:'+223 77 67 03 03',email:'contact@gbafrique.com',website:'gbafrique.com',tax:0,quotePrefix:'GBA-D',invoicePrefix:'GBA-F',receiptPrefix:'GBA-R',terms:'',footer:'Construire aujourd’hui • Bâtir demain • Développer l’Afrique'},...Object.fromEntries(TABLES.map(t=>[t,[]])),accounts:[{id:'main',name:'Caisse entreprise',opening:0}]};}
+export const EXPENSE_CATEGORIES=['Matériaux','Main d’œuvre','Transport','Carburant','Location matériel','Sous-traitance','Nourriture / divers','Loyer','Énergie','Autres'];
 export const find=(s,t,id)=>s[t].find(x=>String(x.id)===String(id));
 export const sum=(a,key='amount')=>a.reduce((n,r)=>n+(Number(r[key])||0),0);
 export const active=a=>a.filter(x=>!x.void);
@@ -35,7 +36,7 @@ export function apply(state,action){const s=structuredClone(state),{type,table,d
  assert(TABLES.includes(table)&&!['audit','payments','teamPayments','transfers','stockMoves','cashEntries','invoices','deliveries'].includes(table),'Opération invalide.');
  const d={...data,id};
  if(['clients','projects','employees','suppliers','accounts'].includes(table))assert(d.name?.trim(),'Le nom est obligatoire.');
- if(table==='accounts'){assert(Number.isSafeInteger(Number(d.opening)),'Solde initial invalide.');if(find(s,table,id))assert(Number(find(s,table,id).opening)===Number(d.opening),'Le solde initial est figé. Utilisez un mouvement de caisse.');}
+ if(table==='accounts'){assert(Number.isSafeInteger(Number(d.opening)),'Solde initial invalide.');if(find(s,table,id))assert(Number(find(s,table,id).opening)===Number(d.opening),'Le solde initial est figé. Utilisez un mouvement de caisse.');if(d.projectId)ref(s,'projects',d.projectId,'Chantier');else d.projectId='';if(d.holderId)ref(s,'employees',d.holderId,'Responsable');else d.holderId='';}
  if(table==='projects'){ref(s,'clients',d.clientId,'Client');const oldProject=find(s,'projects',id);if(oldProject&&oldProject.clientId!==d.clientId)assert(![...s.quotes,...s.invoices].some(x=>x.projectId===id),'Ce chantier est lié à des devis ou factures : son client ne peut pas être changé.');assert(Number(d.contractAmount)>=0&&Number(d.budget)>=0&&Number(d.managerBudget||0)>=0,'Montants invalides.');}
  if(table==='expenses'){amount(d.amount);ref(s,'accounts',d.accountId,'Caisse');if(d.scope==='Chantier'){assert(d.projectId,'Choisissez le chantier de cette dépense, ou le type « Entreprise ».');ref(s,'projects',d.projectId,'Chantier');}else d.projectId='';assert(d.description?.trim(),'Désignation obligatoire.');assert(!find(s,table,id),'Annulez la dépense puis ressaisissez-la pour conserver la trace.');}
  if(table==='quotes'){docCheck(s,d);assert(!find(s,'quotes',id)?.invoiceId,'Un devis facturé ne peut plus être modifié.');d.number=d.number||nextNumber(s,'quotes',s.settings.quotePrefix);}

@@ -72,3 +72,18 @@
 .qr-box{text-align:center;padding:14px;margin:10px 0;border:1px dashed #0066cc;border-radius:12px;background:#fff}
 .qr-box img{max-width:260px;width:100%;height:auto}
 .qr-box code{display:block;word-break:break-all;font-size:12px;margin:8px 0}
+
+.member-thread-toggle{display:inline-flex;align-items:center;gap:6px;background:none;border:0;color:#0066cc;font-size:16px;padding:10px 0;min-height:44px;cursor:pointer}
+.member-thread{margin-top:8px;border-top:1px solid #e0e7f0;padding-top:8px;display:flex;flex-direction:column;gap:8px}
+.member-msg{background:#f2f5f9;border-radius:12px;padding:8px 12px;max-width:92%}
+.member-msg.mine{background:#e3f0ff;align-self:flex-end}
+.member-msg p{margin:4px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}
+.member-thread form{display:flex;flex-direction:column;gap:8px}
+.member-thread textarea{width:100%;font-size:16px;padding:10px;border:1px solid #c9d4e2;border-radius:10px;font-family:inherit}
+.member-item{border:1px solid #e0e7f0;border-radius:12px;padding:10px;margin:8px 0}
+.member-item-row{display:flex;gap:8px;align-items:flex-end}
+.member-item-row label{flex:1;min-width:0}
+.member-cash-line{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid #e0e7f0}
+.member-cash-line span{display:flex;flex-direction:column;min-width:0}
+.member-cash-line small{color:#6b7f9c;overflow-wrap:anywhere}
+.member-cash-line>b{white-space:nowrap}

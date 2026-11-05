@@ -1,5 +1,6 @@
 import { apply, validate } from '../src/domain.js';
 import { ROLES, viewFor, canWrite, canManageTeam } from '../src/permissions.js';
+import { heldBy } from '../src/cashbox.js';
 
 const SESSION_COOKIE = 'gba_session';
 const STATE_COOKIE = 'gba_google_state';
@@ -340,7 +341,7 @@ async function createInvite(request, env, id) {
 }
 
 // ---- Saisies de l'équipe : dépenses et paiements à valider, incidents, photos de chantier ----
-const ENTRY_KINDS = { direction: ['expense', 'teamPayment', 'incident', 'photo'], gestionnaire: ['expense', 'teamPayment', 'incident', 'photo'], chef: ['incident', 'photo'], ouvrier: ['incident', 'photo'] };
+const ENTRY_KINDS = { direction: ['expense', 'teamPayment', 'incident', 'photo'], gestionnaire: ['expense', 'teamPayment', 'incident', 'photo'], chef: ['expense', 'incident', 'photo'], ouvrier: ['incident', 'photo'] };
 const PHOTO_LIMIT = 1500000;
 const MONEY_KINDS = ['expense', 'teamPayment'];
 const seesMoney = (user) => ['direction', 'gestionnaire'].includes(user.role);
@@ -363,15 +364,16 @@ const validDate = (value) => {
 };
 const publicEntry = (row) => ({
   id: row.id, kind: row.kind, projectId: row.project_id, userName: row.user_name, data: JSON.parse(row.data), status: row.status,
-  accountId: row.account_id || '', reason: row.reason || '', createdAt: row.created_at, decidedAt: row.decided_at || '', appliedAt: row.applied_at || '', applyError: row.apply_error || '', hasPhoto: !!row.has_photo,
+  accountId: row.account_id || '', reason: row.reason || '', createdAt: row.created_at, decidedAt: row.decided_at || '', appliedAt: row.applied_at || '', applyError: row.apply_error || '', hasPhoto: !!row.has_photo, messages: Number(row.messages || 0),
 });
-const ENTRY_COLUMNS = 'id,kind,project_id,user_name,data,status,account_id,reason,created_at,decided_at,applied_at,apply_error,photo IS NOT NULL AS has_photo';
+const ENTRY_COLUMNS = 'id,kind,project_id,user_id,user_name,data,status,account_id,reason,created_at,decided_at,applied_at,apply_error,photo IS NOT NULL AS has_photo,(SELECT COUNT(*) FROM messages m WHERE m.thread_id=entries.id) AS messages';
 async function visibleProjects(env, user) {
   const current = await readWorkspace(env);
   if (!current) return { current: null, ids: new Set() };
   return { current, ids: new Set(viewFor(current.data, user).projects.map((p) => p.id)) };
 }
-const entryAllowed = (entry, user, ids) => (seesMoney(user) ? true : !MONEY_KINDS.includes(entry.kind) && ids.has(entry.project_id));
+// Le chef de chantier ne voit, parmi les saisies d'argent, que les siennes (dépenses de sa caisse).
+const entryAllowed = (entry, user, ids) => (seesMoney(user) ? true : MONEY_KINDS.includes(entry.kind) ? entry.user_id === user.id : ids.has(entry.project_id));
 async function reservedOnTask(env, taskId, state) {
   const { results } = await env.DB.prepare("SELECT id,data FROM entries WHERE kind='teamPayment' AND (status='pending' OR (status='approved' AND applied_at IS NULL))").all();
   return results.reduce((n, row) => { const d = JSON.parse(row.data); return d.taskId === taskId && !state.teamPayments.some((p) => p.id === row.id) ? n + Number(d.amount || 0) : n; }, 0);
@@ -381,7 +383,7 @@ async function createEntry(request, env) {
   const body = await readJson(request);
   // Un renvoi (réponse perdue) retourne la saisie déjà enregistrée, avant tout autre contrôle.
   if (typeof body.id === 'string' && /^[\w-]{8,64}$/.test(body.id)) {
-    const known = await env.DB.prepare(`SELECT user_id,${ENTRY_COLUMNS} FROM entries WHERE id=?`).bind(body.id).first();
+    const known = await env.DB.prepare(`SELECT ${ENTRY_COLUMNS} FROM entries WHERE id=?`).bind(body.id).first();
     if (known) {
       if (known.user_id !== user.id) fail(409, 'Identifiant déjà utilisé.');
       return reply({ entry: publicEntry(known) }, 200);
@@ -397,7 +399,8 @@ async function createEntry(request, env) {
   if (body.kind === 'expense') {
     const description = shortText(body.description, 300, 'Désignation');
     if (!description) fail(400, 'Désignation obligatoire.');
-    data = { description, amount: validAmount(body.amount), category: shortText(body.category, 60, 'Catégorie') || 'Autres', method: shortText(body.method, 40, 'Mode'), date };
+    const scope = ['Chantier', 'Entreprise', 'Personnel'].includes(body.scope) ? body.scope : 'Chantier';
+    data = { description, amount: validAmount(body.amount), scope, category: shortText(body.category, 60, 'Catégorie') || 'Autres', method: shortText(body.method, 40, 'Mode'), date };
   } else if (body.kind === 'teamPayment') {
     const task = current.data.tasks.find((t) => t.id === body.taskId && t.projectId === body.projectId);
     if (!task) fail(400, 'Choisissez une tâche de ce chantier.');
@@ -419,9 +422,20 @@ async function createEntry(request, env) {
     photo = body.photo;
   }
   if (body.kind === 'photo' && !photo) fail(400, 'Ajoutez une photo.');
+  // L'argent sort de la caisse confiée à la personne (celle du chantier si elle en a une) ;
+  // la direction peut encore la changer au moment de valider.
+  let accountId = null;
+  if (MONEY_KINDS.includes(body.kind)) {
+    const held = heldBy(current.data, user.employeeId);
+    if (user.role === 'chef' && !held.length) fail(403, 'Aucune caisse ne vous est confiée : demandez-en une à la direction.');
+    if (body.accountId) {
+      if (!held.some((a) => a.id === body.accountId)) fail(403, 'Cette caisse ne vous est pas confiée.');
+      accountId = body.accountId;
+    } else if (held.length) accountId = (held.find((a) => a.projectId === body.projectId) || held[0]).id;
+  }
   const status = MONEY_KINDS.includes(body.kind) ? 'pending' : body.kind === 'incident' ? 'open' : 'info';
-  const saved = await env.DB.prepare('INSERT OR IGNORE INTO entries(id,kind,project_id,user_id,user_name,data,photo,status,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
-    .bind(id, body.kind, body.projectId, user.id, user.name, JSON.stringify(data), photo, status, new Date().toISOString()).run();
+  const saved = await env.DB.prepare('INSERT OR IGNORE INTO entries(id,kind,project_id,user_id,user_name,data,photo,status,account_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)')
+    .bind(id, body.kind, body.projectId, user.id, user.name, JSON.stringify(data), photo, status, accountId, new Date().toISOString()).run();
   if (saved.meta.changes !== 1) {
     const existing = await env.DB.prepare('SELECT user_id FROM entries WHERE id=?').bind(id).first();
     if (existing?.user_id !== user.id) fail(409, 'Identifiant déjà utilisé.');
@@ -438,7 +452,7 @@ async function listEntries(request, env) {
 }
 async function entryPhoto(request, env, id) {
   const user = await requireUser(request, env);
-  const row = await env.DB.prepare('SELECT kind,project_id,photo FROM entries WHERE id=?').bind(id).first();
+  const row = await env.DB.prepare('SELECT kind,project_id,user_id,photo FROM entries WHERE id=?').bind(id).first();
   const { ids } = await visibleProjects(env, user);
   if (!row || !entryAllowed(row, user, ids) || !row.photo) fail(404, 'Photo introuvable.');
   return reply({ photo: row.photo });
@@ -470,6 +484,8 @@ async function decideEntry(request, env, id) {
     result = await env.DB.prepare("UPDATE entries SET status='rejected',reason=?,decided_at=? WHERE id=? AND status='pending'").bind(reason, now, id).run();
   } else if (body.decision === 'resolve') {
     result = await env.DB.prepare("UPDATE entries SET status='resolved',reason=?,decided_at=? WHERE id=? AND status='open'").bind(shortText(body.reason, 500, 'Note'), now, id).run();
+  } else if (body.decision === 'reopen') {
+    result = await env.DB.prepare("UPDATE entries SET status='open',decided_at=? WHERE id=? AND status='resolved'").bind(now, id).run();
   } else if (body.decision === 'retry') {
     result = await env.DB.prepare("UPDATE entries SET apply_error=NULL WHERE id=? AND status='approved' AND applied_at IS NULL AND apply_error IS NOT NULL").bind(id).run();
   } else if (body.decision === 'cancel') {
@@ -495,6 +511,158 @@ async function markApplied(request, env, id) {
     : "UPDATE entries SET applied_at=? WHERE id=? AND status='approved' AND applied_at IS NULL").bind(error || new Date().toISOString(), id).run();
   if (result.meta.changes !== 1) fail(409, 'Saisie déjà traitée.');
   return reply({ ok: true });
+}
+
+// ---- Demandes de matériel ----
+// besoin (ouvrier) -> demande (chef, gestionnaire) -> commande (direction : bon de commande)
+// -> livre (matériel arrivé sur le chantier) -> recu (la personne qui l'a demandé l'a reçu).
+const REQUEST_COLUMNS = 'id,project_id,user_id,user_name,items,note,status,order_data,order_number,order_applied_at,delivery_applied_at,apply_error,reason,history,created_at,updated_at,(SELECT COUNT(*) FROM messages m WHERE m.thread_id=material_requests.id) AS messages';
+const requestAllowed = (row, user, ids) => ['direction', 'gestionnaire'].includes(user.role) || row.user_id === user.id || (user.role === 'chef' && ids.has(row.project_id));
+const leads = (user, row, ids) => user.role === 'direction' || user.role === 'gestionnaire' || (user.role === 'chef' && ids.has(row.project_id));
+function publicRequest(row, user) {
+  const order = row.order_data ? JSON.parse(row.order_data) : null;
+  return {
+    id: row.id, projectId: row.project_id, userName: row.user_name, mine: row.user_id === user.id, items: JSON.parse(row.items), note: row.note || '', status: row.status, reason: row.reason || '',
+    order: order ? { supplierName: order.supplierName, expectedDate: order.expectedDate || '', ...(seesMoney(user) ? { supplierId: order.supplierId, amount: order.amount } : {}) } : null,
+    orderNumber: row.order_number || '', orderReady: !!row.order_applied_at, deliveryApplied: !!row.delivery_applied_at, applyError: row.apply_error || '',
+    history: JSON.parse(row.history || '[]'), messages: Number(row.messages || 0), createdAt: row.created_at, updatedAt: row.updated_at,
+  };
+}
+function validItems(value) {
+  if (!Array.isArray(value) || !value.length || value.length > 30) fail(400, 'Indiquez entre 1 et 30 articles.');
+  return value.map((x) => {
+    const description = shortText(x?.description, 200, 'Article');
+    const quantity = Number(x?.quantity);
+    if (!description) fail(400, 'Chaque article doit avoir une désignation.');
+    if (!Number.isFinite(quantity) || quantity <= 0 || quantity > 1000000) fail(400, 'Quantité invalide.');
+    return { description, quantity, unit: shortText(x?.unit, 20, 'Unité') };
+  });
+}
+async function createRequest(request, env) {
+  const user = await requireUser(request, env);
+  const body = await readJson(request);
+  const validId = typeof body.id === 'string' && /^[\w-]{8,64}$/.test(body.id);
+  if (validId) {
+    const known = await env.DB.prepare(`SELECT ${REQUEST_COLUMNS} FROM material_requests WHERE id=?`).bind(body.id).first();
+    if (known) {
+      if (known.user_id !== user.id) fail(409, 'Identifiant déjà utilisé.');
+      return reply({ request: publicRequest(known, user) });
+    }
+  }
+  const { current, ids } = await visibleProjects(env, user);
+  if (!current) fail(409, 'Les données de l’entreprise ne sont pas encore disponibles.');
+  if (typeof body.projectId !== 'string' || !ids.has(body.projectId)) fail(403, 'Chantier non autorisé.');
+  const items = validItems(body.items);
+  const now = new Date().toISOString();
+  const status = user.role === 'ouvrier' ? 'besoin' : 'demande';
+  const id = validId ? body.id : crypto.randomUUID();
+  const history = [{ at: now, by: user.name, step: status }];
+  await env.DB.prepare('INSERT OR IGNORE INTO material_requests(id,project_id,user_id,user_name,items,note,status,history,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)')
+    .bind(id, body.projectId, user.id, user.name, JSON.stringify(items), shortText(body.note, 1000, 'Note'), status, JSON.stringify(history), now, now).run();
+  const row = await env.DB.prepare(`SELECT ${REQUEST_COLUMNS} FROM material_requests WHERE id=?`).bind(id).first();
+  if (row.user_id !== user.id) fail(409, 'Identifiant déjà utilisé.');
+  return reply({ request: publicRequest(row, user) }, 201);
+}
+async function listRequests(request, env) {
+  const user = await requireUser(request, env);
+  const { ids } = await visibleProjects(env, user);
+  const { results } = await env.DB.prepare(`SELECT ${REQUEST_COLUMNS} FROM material_requests WHERE status IN ('besoin','demande','commande','livre') OR id IN (SELECT id FROM material_requests ORDER BY updated_at DESC LIMIT 300) ORDER BY updated_at DESC`).all();
+  return reply({ requests: results.filter((row) => requestAllowed(row, user, ids)).map((row) => publicRequest(row, user)) });
+}
+async function stepRequest(request, env, id) {
+  const user = await requireUser(request, env);
+  const body = await readJson(request);
+  const row = await env.DB.prepare('SELECT * FROM material_requests WHERE id=?').bind(id).first();
+  const { current, ids } = await visibleProjects(env, user);
+  if (!row || !requestAllowed(row, user, ids)) fail(404, 'Demande introuvable.');
+  const lead = leads(user, row, ids);
+  const sets = {};
+  let from;
+  let to;
+  if (body.step === 'forward') {
+    if (!lead) fail(403, 'Seuls le chef de chantier, le gestionnaire ou la direction transmettent une demande.');
+    from = ['besoin']; to = 'demande';
+    if (body.items !== undefined) sets.items = JSON.stringify(validItems(body.items));
+  } else if (body.step === 'refuse') {
+    if (!lead) fail(403, 'Action non autorisée.');
+    from = user.role === 'direction' ? ['besoin', 'demande'] : ['besoin']; to = 'refuse';
+    sets.reason = shortText(body.reason, 500, 'Motif');
+    if (!sets.reason) fail(400, 'Indiquez le motif du refus.');
+  } else if (body.step === 'order') {
+    if (user.role !== 'direction') fail(403, 'Seule la direction établit le bon de commande.');
+    const supplier = current?.data.suppliers.find((x) => x.id === body.supplierId);
+    if (!supplier) fail(400, 'Choisissez le fournisseur.');
+    from = ['demande']; to = 'commande';
+    sets.order_data = JSON.stringify({ supplierId: supplier.id, supplierName: supplier.name, amount: validAmount(body.amount), expectedDate: body.expectedDate ? validDate(body.expectedDate) : '' });
+    if (body.items !== undefined) sets.items = JSON.stringify(validItems(body.items));
+  } else if (body.step === 'deliver') {
+    if (!lead) fail(403, 'Seuls le chef de chantier, le gestionnaire ou la direction confirment la livraison.');
+    if (!row.order_applied_at) fail(409, 'Le bon de commande n’est pas encore enregistré par la direction.');
+    from = ['commande']; to = 'livre';
+  } else if (body.step === 'receive') {
+    if (!lead && row.user_id !== user.id) fail(403, 'Action non autorisée.');
+    from = ['livre']; to = 'recu';
+  } else if (body.step === 'retry') {
+    if (user.role !== 'direction') fail(403, 'Action non autorisée.');
+    const done = await env.DB.prepare('UPDATE material_requests SET apply_error=NULL WHERE id=? AND apply_error IS NOT NULL').bind(id).run();
+    if (done.meta.changes !== 1) fail(409, 'Rien à réessayer.');
+    return reply({ ok: true });
+  } else fail(400, 'Étape inconnue.');
+  if (!from.includes(row.status)) fail(409, 'Cette demande a déjà avancé : actualisez.');
+  const now = new Date().toISOString();
+  const history = [...JSON.parse(row.history || '[]'), { at: now, by: user.name, step: to }];
+  const keys = Object.keys(sets);
+  const done = await env.DB.prepare(`UPDATE material_requests SET status=?,history=?,updated_at=?${keys.map((k) => `,${k}=?`).join('')} WHERE id=? AND status=?`)
+    .bind(to, JSON.stringify(history), now, ...keys.map((k) => sets[k]), id, row.status).run();
+  if (done.meta.changes !== 1) fail(409, 'Cette demande a déjà avancé : actualisez.');
+  const updated = await env.DB.prepare(`SELECT ${REQUEST_COLUMNS} FROM material_requests WHERE id=?`).bind(id).first();
+  return reply({ request: publicRequest(updated, user) });
+}
+// Ce que le téléphone de la direction doit inscrire dans ses données : le bon de commande, puis la réception.
+async function requestsToApply(request, env) {
+  const user = await requireManager(request, env);
+  const { results } = await env.DB.prepare(`SELECT ${REQUEST_COLUMNS} FROM material_requests WHERE apply_error IS NULL AND ((status IN ('commande','livre','recu') AND order_applied_at IS NULL) OR (status IN ('livre','recu') AND delivery_applied_at IS NULL)) ORDER BY updated_at`).all();
+  return reply({ requests: results.map((row) => ({ ...publicRequest(row, user), deliveredBy: (JSON.parse(row.history || '[]').find((h) => h.step === 'livre') || {}).by || '' })) });
+}
+async function markRequestApplied(request, env, id) {
+  await requireManager(request, env);
+  const body = await readJson(request);
+  let result;
+  if (body.error) result = await env.DB.prepare('UPDATE material_requests SET apply_error=? WHERE id=?').bind(shortText(body.error, 300, 'Erreur'), id).run();
+  else if (body.phase === 'order') result = await env.DB.prepare("UPDATE material_requests SET order_applied_at=?,order_number=? WHERE id=? AND order_applied_at IS NULL AND status IN ('commande','livre','recu')").bind(new Date().toISOString(), shortText(body.number, 40, 'Numéro'), id).run();
+  else if (body.phase === 'delivery') result = await env.DB.prepare("UPDATE material_requests SET delivery_applied_at=? WHERE id=? AND delivery_applied_at IS NULL AND order_applied_at IS NOT NULL AND status IN ('livre','recu')").bind(new Date().toISOString(), id).run();
+  else fail(400, 'Étape inconnue.');
+  if (result.meta.changes !== 1) fail(409, 'Déjà enregistré.');
+  return reply({ ok: true });
+}
+
+// ---- Fil de messages (incident ou demande de matériel) ----
+async function threadAllowed(env, user, id) {
+  const { ids } = await visibleProjects(env, user);
+  const entry = await env.DB.prepare('SELECT kind,project_id,user_id FROM entries WHERE id=?').bind(id).first();
+  if (entry) return entryAllowed(entry, user, ids);
+  const req = await env.DB.prepare('SELECT project_id,user_id FROM material_requests WHERE id=?').bind(id).first();
+  return !!req && requestAllowed(req, user, ids);
+}
+async function listMessages(request, env, id) {
+  const user = await requireUser(request, env);
+  if (!await threadAllowed(env, user, id)) fail(404, 'Discussion introuvable.');
+  // Les 300 derniers messages, remis dans l'ordre chronologique.
+  const { results } = await env.DB.prepare('SELECT id,user_id,user_name,role,text,created_at FROM messages WHERE thread_id=? ORDER BY created_at DESC, rowid DESC LIMIT 300').bind(id).all();
+  return reply({ messages: results.reverse().map((m) => ({ id: m.id, userName: m.user_name, role: m.role, text: m.text, at: m.created_at, mine: m.user_id === user.id })) });
+}
+async function postMessage(request, env, id) {
+  const user = await requireUser(request, env);
+  const body = await readJson(request);
+  if (!await threadAllowed(env, user, id)) fail(404, 'Discussion introuvable.');
+  const text = shortText(body.text, 1000, 'Message');
+  if (!text) fail(400, 'Écrivez un message.');
+  const msgId = typeof body.id === 'string' && /^[\w-]{8,64}$/.test(body.id) ? body.id : crypto.randomUUID();
+  await env.DB.prepare('INSERT OR IGNORE INTO messages(id,thread_id,user_id,user_name,role,text,created_at) VALUES(?,?,?,?,?,?,?)')
+    .bind(msgId, id, user.id, user.name, user.role, text, new Date().toISOString()).run();
+  const saved = await env.DB.prepare('SELECT user_id,thread_id FROM messages WHERE id=?').bind(msgId).first();
+  if (saved.user_id !== user.id || saved.thread_id !== id) fail(409, 'Identifiant déjà utilisé.');
+  return reply({ ok: true }, 201);
 }
 
 export async function handleTeam(request, env) {
@@ -529,6 +697,15 @@ export async function handleTeam(request, env) {
     if (entry && method === 'GET' && entry[2] === 'photo') return await entryPhoto(request, env, entry[1]);
     if (entry && method === 'POST' && entry[2] === 'decision') return await decideEntry(request, env, entry[1]);
     if (entry && method === 'POST' && entry[2] === 'applied') return await markApplied(request, env, entry[1]);
+    if (method === 'POST' && path === '/api/requests') return await createRequest(request, env);
+    if (method === 'GET' && path === '/api/requests') return await listRequests(request, env);
+    if (method === 'GET' && path === '/api/requests/to-apply') return await requestsToApply(request, env);
+    const req = path.match(/^\/api\/requests\/([\w-]{1,64})\/(step|applied)$/);
+    if (req && method === 'POST' && req[2] === 'step') return await stepRequest(request, env, req[1]);
+    if (req && method === 'POST' && req[2] === 'applied') return await markRequestApplied(request, env, req[1]);
+    const thread = path.match(/^\/api\/threads\/([\w-]{1,64})$/);
+    if (thread && method === 'GET') return await listMessages(request, env, thread[1]);
+    if (thread && method === 'POST') return await postMessage(request, env, thread[1]);
     const member = path.match(/^\/api\/users\/([\w-]{1,100})(\/invite)?$/);
     if (member && method === 'PATCH' && !member[2]) return await updateUser(request, env, member[1]);
     if (member && method === 'POST' && member[2]) return await createInvite(request, env, member[1]);

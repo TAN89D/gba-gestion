@@ -1,15 +1,19 @@
 import React, { useEffect, useState } from 'react';
 import { api, inviteUrl, qrImage, MemberForm } from './team.jsx';
 import { ROLES } from './permissions.js';
-import { money, fmtDate } from './domain.js';
+import { money, fmtDate, today } from './domain.js';
 import { overview, projectRows, invoiceRows, expenseRows, workerRows, activityRows } from './adminData.js';
-import { ENTRY_LABELS, STATUS_LABELS } from './entries.js';
+import { ENTRY_LABELS, STATUS_LABELS, itemsText } from './entries.js';
 import { PhotoGrid, PhotoView, ReportButton, MyEntries } from './entries.jsx';
+import { Thread, requestStatus, printOrder } from './requests.jsx';
+import { spending, overspending, cashbox } from './cashbox.js';
 import './admin.css';
 
 const TABS = [
   ['home', 'Vue d’ensemble'],
   ['queue', 'À valider'],
+  ['material', 'Matériel'],
+  ['cash', 'Caisses'],
   ['projects', 'Chantiers'],
   ['folders', 'Dossiers'],
   ['invoices', 'Factures'],
@@ -64,11 +68,31 @@ function Kpi({ label, value, tone }) {
 function Box({ title, empty, rows, render }) {
   return <section className="admin-box"><h3>{title}</h3>{rows.length ? rows.map(render) : <p className="admin-empty">{empty}</p>}</section>;
 }
-function Home({ data, users, go, entries }) {
+function DayBox({ data }) {
+  const [day, setDay] = useState(today());
+  const [by, setBy] = useState('bySite');
+  const v = spending(data, day);
+  const over = overspending(data);
+  return <div className="admin-cols">
+    <section className="admin-box"><h3>Dépenses du <input type="date" aria-label="Jour affiché" value={day} onChange={(e) => setDay(e.target.value || today())} /> : {money(v.total)}</h3>
+      <div className="admin-actions">{[['bySite', 'Par chantier'], ['byCategory', 'Par catégorie'], ['byAccount', 'Par caisse']].map(([k, l]) => <button key={k} className={by === k ? 'primary' : ''} aria-pressed={by === k} onClick={() => setBy(k)}>{l}</button>)}</div>
+      {v[by].length ? v[by].map((g) => <div className="admin-line" key={g.key}><span>{g.name}<br /><small>{g.count} sortie(s)</small></span><b>{money(g.amount)}</b></div>) : <p className="admin-empty">Aucune dépense ce jour-là.</p>}
+    </section>
+    <section className="admin-box"><h3>Dépenses de trop</h3>
+      {!over.sites.length && !over.boxes.length && <p className="admin-empty">Aucun dépassement.</p>}
+      {over.sites.map((x) => <div className="admin-line" key={x.project.id}><span>{x.project.name}<br /><small>Budget dépassé</small></span><b style={{ color: '#c62828' }}>+ {money(x.over)}</b></div>)}
+      {over.boxes.map((x) => <div className="admin-line" key={x.account.id}><span>{x.account.name}<br /><small>Caisse négative : argent avancé</small></span><b style={{ color: '#c62828' }}>{money(x.balance)}</b></div>)}
+    </section>
+  </div>;
+}
+function Home({ data, users, go, entries, requests }) {
   const o = overview(data);
   const toDo = entries.filter((e) => ['pending', 'open'].includes(e.status)).length;
+  const toOrder = requests.filter((r) => r.status === 'demande').length;
   return <>
     {toDo > 0 && <div className="admin-note"><b>{toDo} élément(s) de l’équipe à traiter.</b> <button className="admin-link" onClick={() => go('queue')}>Voir</button></div>}
+    {toOrder > 0 && <div className="admin-note"><b>{toOrder} demande(s) de matériel attendent un bon de commande.</b> <button className="admin-link" onClick={() => go('material')}>Voir</button></div>}
+    <DayBox data={data} />
     <div className="admin-kpis">
       <Kpi label="Disponible en caisse" value={money(o.cash)} tone={o.cash < 0 ? 'bad' : 'good'} />
       <Kpi label="Facturé" value={money(o.invoiced)} />
@@ -159,7 +183,8 @@ function Activity({ data }) {
   ]} />;
 }
 function EntryCard({ entry, data, reload }) {
-  const [accountId, setAccountId] = useState(data?.accounts?.[0]?.id || '');
+  // La caisse proposée est celle confiée à la personne qui a fait la saisie.
+  const [accountId, setAccountId] = useState(entry.accountId || data?.accounts?.[0]?.id || '');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [showPhoto, setShowPhoto] = useState(false);
@@ -170,7 +195,7 @@ function EntryCard({ entry, data, reload }) {
   const site = data?.projects?.find((p) => p.id === entry.projectId)?.name || 'Chantier inconnu';
   return <div className="admin-entry">
     <div className="admin-user-head"><b>{entry.data.description || entry.data.note || ENTRY_LABELS[entry.kind]}</b><span className="admin-tag">{ENTRY_LABELS[entry.kind]}</span><span className={'admin-tag' + (entry.status === 'rejected' ? ' bad' : '')}>{STATUS_LABELS[entry.status]}</span></div>
-    <small>{site} · {fmtDate(entry.data.date)} · {entry.userName}{entry.data.method ? ' · ' + entry.data.method : ''}</small>
+    <small>{entry.data.scope && entry.data.scope !== 'Chantier' ? (entry.data.scope === 'Entreprise' ? 'Pour l’entreprise' : 'Dépense personnelle') + ' (caisse du chantier ' + site + ')' : site} · {fmtDate(entry.data.date)} · {entry.userName}{entry.data.category ? ' · ' + entry.data.category : ''}{entry.data.method ? ' · ' + entry.data.method : ''}</small>
     {entry.data.amount && <div className="admin-line"><span>Montant</span><b>{money(entry.data.amount)}</b></div>}
     {entry.applyError && <p className="error" role="alert">Non enregistré sur le téléphone : {entry.applyError}</p>}
     {entry.hasPhoto && (showPhoto ? <PhotoView id={entry.id} alt="Pièce jointe" /> : <div className="admin-actions"><button onClick={() => setShowPhoto(true)}>Voir la photo</button></div>)}
@@ -180,7 +205,9 @@ function EntryCard({ entry, data, reload }) {
       <button className="danger" disabled={busy} onClick={() => { const reason = prompt('Motif du refus'); if (reason?.trim()) decide('reject', { reason }); }}>Refuser</button>
     </div>}
     {entry.applyError && <div className="admin-actions"><button disabled={busy} onClick={() => decide('retry')}>Réessayer</button><button className="danger" disabled={busy} onClick={() => { const reason = prompt('Motif de l’abandon'); if (reason?.trim()) decide('cancel', { reason }); }}>Abandonner cette saisie</button></div>}
-    {entry.status === 'open' && <div className="admin-actions"><button disabled={busy} onClick={() => decide('resolve')}>Marquer comme résolu</button></div>}
+    {entry.status === 'open' && <div className="admin-actions"><button disabled={busy} onClick={() => { const reason = prompt('Ce qui a été fait (facultatif)'); if (reason !== null) decide('resolve', { reason }); }}>Marquer comme résolu</button></div>}
+    {entry.status === 'resolved' && <div className="admin-actions"><button disabled={busy} onClick={() => decide('reopen')}>Rouvrir</button></div>}
+    {entry.kind === 'incident' && <Thread id={entry.id} count={entry.messages} />}
     {error && <p className="error" role="alert">{error}</p>}
   </div>;
 }
@@ -197,6 +224,72 @@ function Queue({ entries, data, reload }) {
     <div className="admin-queue">{open.length ? open.map((e) => <EntryCard key={e.id} entry={e} data={data} reload={reload} />) : <p className="admin-empty">Aucun incident ouvert.</p>}</div>
     {!!stuck.length && <><h2>À vérifier ({stuck.length})</h2><div className="admin-queue">{stuck.map((e) => <EntryCard key={e.id} entry={e} data={data} reload={reload} />)}</div></>}
   </>;
+}
+function OrderForm({ r, data, reload }) {
+  const [supplierId, setSupplierId] = useState('');
+  const [amount, setAmount] = useState('');
+  const [expectedDate, setExpectedDate] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const step = async (name, extra) => {
+    setBusy(true); setError('');
+    try { await api(`/api/requests/${r.id}/step`, { method: 'POST', body: { step: name, ...extra } }); await reload(); } catch (x) { setError(x.message); setBusy(false); }
+  };
+  if (!data.suppliers.length) return <p className="error">Ajoutez d’abord un fournisseur dans l’application pour établir le bon de commande.</p>;
+  return <form onSubmit={(e) => { e.preventDefault(); step('order', { supplierId, amount: Number(amount), expectedDate: expectedDate || undefined }); }}>
+    <div className="admin-form">
+      <label>Fournisseur<select required value={supplierId} onChange={(e) => setSupplierId(e.target.value)}><option value="">Choisir…</option>{data.suppliers.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
+      <label>Montant prévu (F)<input required type="number" min="1" step="1" inputMode="numeric" value={amount} onChange={(e) => setAmount(e.target.value)} /></label>
+      <label>Livraison prévue<input type="date" value={expectedDate} onChange={(e) => setExpectedDate(e.target.value)} /></label>
+    </div>
+    <div className="admin-actions"><button className="primary" type="submit" disabled={busy}>Établir le bon de commande</button><button type="button" className="danger" disabled={busy} onClick={() => { const reason = prompt('Motif du refus'); if (reason?.trim()) step('refuse', { reason }); }}>Refuser</button></div>
+    {error && <p className="error" role="alert">{error}</p>}
+  </form>;
+}
+function RequestAdminCard({ r, data, reload }) {
+  const [error, setError] = useState('');
+  const site = data.projects.find((p) => p.id === r.projectId)?.name || 'Chantier inconnu';
+  const retry = async () => { try { await api(`/api/requests/${r.id}/step`, { method: 'POST', body: { step: 'retry' } }); await reload(); } catch (x) { setError(x.message); } };
+  return <div className="admin-entry">
+    <div className="admin-user-head"><b>{itemsText(r.items)}</b><span className={'admin-tag' + (r.status === 'refuse' ? ' bad' : r.status === 'recu' ? ' good' : '')}>{requestStatus(r)}</span></div>
+    <small>{site} · demandé par {r.userName} le {fmtDate(r.createdAt)}{r.history.length > 1 ? ' · ' + r.history.slice(1).map((h) => h.by).join(' → ') : ''}</small>
+    {r.note && <p>{r.note}</p>}
+    {r.order && <div className="admin-line"><span>{r.order.supplierName}{r.order.expectedDate ? ' · livraison le ' + fmtDate(r.order.expectedDate) : ''}</span><b>{money(r.order.amount)}</b></div>}
+    {r.status === 'commande' && !r.orderReady && !r.applyError && <p className="admin-note">Le bon de commande sera numéroté dès que l’application s’ouvrira sur votre téléphone.</p>}
+    {r.applyError && <><p className="error" role="alert">Non enregistré sur le téléphone : {r.applyError}</p><div className="admin-actions"><button onClick={retry}>Réessayer</button></div></>}
+    {r.reason && <small>Motif : {r.reason}</small>}
+    {r.status === 'demande' && <OrderForm r={r} data={data} reload={reload} />}
+    {r.orderReady && <div className="admin-actions"><button onClick={() => { if (!printOrder(r, data)) setError('Autorisez les fenêtres pour afficher le bon.'); }}>Imprimer le bon de commande</button></div>}
+    <Thread id={r.id} count={r.messages} />
+    {error && <p className="error" role="alert">{error}</p>}
+  </div>;
+}
+function Material({ requests, data, reload }) {
+  const groups = [
+    ['À commander', requests.filter((r) => r.status === 'demande')],
+    ['Besoins pas encore transmis par le chef de chantier', requests.filter((r) => r.status === 'besoin')],
+    ['Commandés, en attente de livraison', requests.filter((r) => r.status === 'commande')],
+    ['Livrés, en attente de confirmation', requests.filter((r) => r.status === 'livre')],
+    ['Terminés', requests.filter((r) => ['recu', 'refuse'].includes(r.status)).slice(0, 30)],
+  ];
+  return <>{groups.map(([title, rows]) => <React.Fragment key={title}><h2>{title} ({rows.length})</h2><div className="admin-queue">{rows.length ? rows.map((r) => <RequestAdminCard key={r.id} r={r} data={data} reload={reload} />) : <p className="admin-empty">Aucune demande.</p>}</div></React.Fragment>)}</>;
+}
+function Cashboxes({ data }) {
+  return <div className="admin-queue">{data.accounts.map((a) => {
+    const c = cashbox(data, a.id);
+    const holder = data.employees.find((e) => e.id === a.holderId)?.name;
+    const site = data.projects.find((p) => p.id === a.projectId)?.name;
+    return <div className="admin-entry" key={a.id}>
+      <div className="admin-user-head"><b>{a.name}</b>{holder && <span className="admin-tag">{holder}</span>}{site && <span className="admin-tag">{site}</span>}</div>
+      <div className="admin-line"><span>Reste en caisse</span><b style={{ color: c.balance < 0 ? '#c62828' : undefined }}>{money(c.balance)}</b></div>
+      <div className="admin-line"><span>Reçu</span><b>{money(c.opening + c.received)}</b></div>
+      <div className="admin-line"><span>{site ? 'Pour le chantier ' + site : 'Pour les chantiers'}</span><b>{money(c.site)}</b></div>
+      {c.otherSites.map((g) => <div className="admin-line" key={g.key}><span>Autre chantier : {g.name}</span><b>{money(g.amount)}</b></div>)}
+      <div className="admin-line"><span>Pour l’entreprise<br /><small>{c.company.map((g) => g.name + ' ' + money(g.amount)).join(' · ')}</small></span><b>{money(c.companyTotal)}</b></div>
+      <div className="admin-line"><span>Dépenses personnelles</span><b>{money(c.personal)}</b></div>
+      {c.back > 0 && <div className="admin-line"><span>Rendu / retiré</span><b>{money(c.back)}</b></div>}
+    </div>;
+  })}</div>;
 }
 function Folders({ data, entries }) {
   const [id, setId] = useState(data.projects[0]?.id || '');
@@ -233,7 +326,7 @@ function EditMember({ user, data, isSelf, onClose, onSaved }) {
       <label>Nom<input required maxLength="80" value={form.name} onChange={(e) => set('name', e.target.value)} /></label>
       <label>Rôle<select value={form.role} disabled={isSelf} onChange={(e) => set('role', e.target.value)}>{Object.entries(ROLES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label>
       <label>Adresse Gmail<input type="email" value={form.email} onChange={(e) => set('email', e.target.value)} /></label>
-      {form.role === 'ouvrier' && <label>Fiche dans l’équipe<select value={form.employeeId} onChange={(e) => set('employeeId', e.target.value)}><option value="">Choisir…</option>{(data?.employees || []).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select></label>}
+      {form.role !== 'direction' && <label>Fiche dans l’équipe (pour lui confier une caisse)<select value={form.employeeId} onChange={(e) => set('employeeId', e.target.value)}><option value="">Choisir…</option>{(data?.employees || []).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select></label>}
       {['chef', 'ouvrier'].includes(form.role) && <div className="admin-sites"><b>Chantiers autorisés</b>{(data?.projects || []).map((p) => <label key={p.id}><input type="checkbox" checked={form.projectIds.includes(p.id)} onChange={() => toggle(p.id)} />{p.name}</label>)}</div>}
     </div>
     {error && <p className="error" role="alert">{error}</p>}
@@ -274,6 +367,7 @@ export function AdminApp() {
   const [users, setUsers] = useState([]);
   const [ws, setWs] = useState(null);
   const [entries, setEntries] = useState([]);
+  const [requests, setRequests] = useState([]);
   const [tab, setTab] = useState('home');
   const [error, setError] = useState('');
   const load = async () => {
@@ -288,8 +382,8 @@ export function AdminApp() {
       const who = await api('/api/me');
       setMe(who.user);
       if (who.user.role !== 'direction') { setState('forbidden'); return; }
-      const [list, workspace, saisies] = await Promise.all([api('/api/users'), api('/api/workspace'), api('/api/entries')]);
-      setUsers(list.users); setWs(workspace); setEntries(saisies.entries); setState('ready');
+      const [list, workspace, saisies, demandes] = await Promise.all([api('/api/users'), api('/api/workspace'), api('/api/entries'), api('/api/requests')]);
+      setUsers(list.users); setWs(workspace); setEntries(saisies.entries); setRequests(demandes.requests); setState('ready');
     } catch (x) {
       if (x.status === 401) { setState('login'); return; }
       setError(x.message); setState('error');
@@ -299,7 +393,7 @@ export function AdminApp() {
   const logout = async () => {
     localStorage.setItem(ADMIN_LOGOUT_KEY, '1');
     try { await api('/api/auth/logout', { method: 'POST' }); localStorage.removeItem(ADMIN_LOGOUT_KEY); } catch { /* terminée au retour du réseau */ }
-    setMe(null); setUsers([]); setWs(null); setEntries([]); setState('login');
+    setMe(null); setUsers([]); setWs(null); setEntries([]); setRequests([]); setState('login');
   };
   if (state === 'loading') return <main className="admin admin-login"><p>Chargement…</p></main>;
   if (state === 'login') return <Login onDone={load} />;
@@ -307,13 +401,14 @@ export function AdminApp() {
   if (state === 'error') return <Login onDone={load} error={error} />;
   const data = ws?.data;
   const pendingCount = entries.filter((e) => ['pending', 'open'].includes(e.status)).length;
+  const toOrder = requests.filter((r) => r.status === 'demande').length;
   const Page = { projects: Projects, invoices: Invoices, expenses: Expenses, workers: Workers, activity: Activity }[tab];
   return <div className="admin">
     <header className="admin-top"><img src="/logo.jpg" alt="GBA" /><div className="admin-grow"><h1>Tableau de bord général</h1><small>{data?.settings?.company || 'GBA Gestion'} · {me.name}</small></div><button onClick={load}>Actualiser</button><button onClick={logout}>Se déconnecter</button></header>
-    <nav className="admin-tabs" aria-label="Sections">{TABS.map(([k, label]) => <button key={k} className={tab === k ? 'on' : ''} aria-current={tab === k ? 'page' : undefined} onClick={() => setTab(k)}>{label}{k === 'queue' && pendingCount > 0 ? ` (${pendingCount})` : ''}</button>)}</nav>
+    <nav className="admin-tabs" aria-label="Sections">{TABS.map(([k, label]) => <button key={k} className={tab === k ? 'on' : ''} aria-current={tab === k ? 'page' : undefined} onClick={() => setTab(k)}>{label}{k === 'queue' && pendingCount > 0 ? ` (${pendingCount})` : ''}{k === 'material' && toOrder > 0 ? ` (${toOrder})` : ''}</button>)}</nav>
     <main className="admin-main">
       {tab !== 'access' && <p className="admin-note">{data ? <>Données reçues de votre téléphone. Dernière mise à jour : {dateTime(ws.updatedAt)}. Les saisies se font pour l’instant dans l’application.</> : 'Aucune donnée pour le moment : lancez le transfert depuis votre téléphone.'}</p>}
-      {tab === 'access' ? <Access users={users} data={data} me={me} reload={load} /> : !data ? null : tab === 'home' ? <Home data={data} users={users} go={setTab} entries={entries} /> : tab === 'queue' ? <Queue entries={entries} data={data} reload={load} /> : tab === 'folders' ? <Folders data={data} entries={entries} /> : <Page data={data} />}
+      {tab === 'access' ? <Access users={users} data={data} me={me} reload={load} /> : !data ? null : tab === 'home' ? <Home data={data} users={users} go={setTab} entries={entries} requests={requests} /> : tab === 'queue' ? <Queue entries={entries} data={data} reload={load} /> : tab === 'material' ? <Material requests={requests} data={data} reload={load} /> : tab === 'cash' ? <Cashboxes data={data} /> : tab === 'folders' ? <Folders data={data} entries={entries} /> : <Page data={data} />}
     </main>
   </div>;
 }
