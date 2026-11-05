@@ -1,0 +1,432 @@
+import React, { useEffect, useState } from 'react';
+import qrcode from 'qrcode-generator';
+import { HardHat, ListChecks, Notebook, Receipt, Package, SignOut, Backspace, GoogleLogo, UserPlus, QrCode, House, Users, CheckCircle, Warning, Camera, Plus, Money } from '@phosphor-icons/react';
+import { ROLES } from './permissions.js';
+import { money, fmtDate } from './domain.js';
+import { readSync, counts, transferAll } from './sync.js';
+import './team.css';
+
+const DEVICE_KEY = 'gba-device';
+const MEMBER_KEY = 'gba-member';
+const OWNER_DATA_KEY = 'gba-web-v3';
+const LOGOUT_PENDING_KEY = 'gba-logout-pending';
+
+async function api(path, { method = 'GET', body, headers = {} } = {}) {
+  let res;
+  try {
+    res = await fetch(path, {
+      method,
+      credentials: 'same-origin',
+      headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+  } catch {
+    throw Object.assign(Error('Connexion Internet indisponible.'), { status: 0 });
+  }
+  let data = {};
+  try { data = await res.json(); } catch { /* réponse sans contenu lisible */ }
+  if (!res.ok) throw Object.assign(Error(data.error || 'Service indisponible.'), { status: res.status });
+  return data;
+}
+const read = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
+const hasOwnerData = () => !!read(OWNER_DATA_KEY);
+
+function Brand({ title, subtitle }) {
+  return <div className="member-brand"><img src="/logo.jpg" alt="GBA" /><div><h1>{title}</h1>{subtitle && <small>{subtitle}</small>}</div></div>;
+}
+function GoogleButton() {
+  return <a className="primary wide" href="/api/auth/google/start"><GoogleLogo size={22} /> Continuer avec Google</a>;
+}
+function PinPad({ title, onDone, busy, error }) {
+  const [pin, setPin] = useState('');
+  const press = (d) => {
+    if (busy || pin.length >= 4) return;
+    const next = pin + d;
+    setPin(next);
+    if (next.length === 4) { onDone(next); setPin(''); }
+  };
+  return (
+    <div>
+      {title && <p style={{ textAlign: 'center', fontSize: 18 }}>{title}</p>}
+      <div className="pin-dots" aria-label={pin.length + ' chiffres saisis sur 4'}>{[0, 1, 2, 3].map((i) => <span key={i} className={i < pin.length ? 'on' : ''} />)}</div>
+      <div className="pinpad">
+        {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((d) => <button type="button" key={d} disabled={busy} onClick={() => press(d)}>{d}</button>)}
+        <span />
+        <button type="button" disabled={busy} onClick={() => press('0')}>0</button>
+        <button type="button" disabled={busy} aria-label="Effacer" onClick={() => setPin(pin.slice(0, -1))}><Backspace size={28} /></button>
+      </div>
+      {error && <p className="error" role="alert">{error}</p>}
+    </div>
+  );
+}
+
+export function JoinScreen({ token, onJoined }) {
+  const [info, setInfo] = useState(null);
+  const [error, setError] = useState('');
+  const [first, setFirst] = useState('');
+  const [busy, setBusy] = useState(false);
+  const blocked = hasOwnerData();
+  useEffect(() => {
+    if (blocked) return;
+    api('/api/auth/invite/info', { method: 'POST', body: { token } }).then(setInfo).catch((e) => setError(e.message));
+  }, []);
+  if (blocked) {
+    return <main className="member-screen"><Brand title="GBA Gestion" /><p className="error">Cet appareil contient déjà les données de la direction. Ouvrez cette invitation sur le téléphone de la personne invitée.</p></main>;
+  }
+  const finish = async (pin) => {
+    if (!first) { setFirst(pin); setError(''); return; }
+    if (pin !== first) { setFirst(''); setError('Les deux codes sont différents. Recommencez.'); return; }
+    setBusy(true);
+    try {
+      const r = await api('/api/auth/invite/redeem', { method: 'POST', body: { token, pin } });
+      localStorage.setItem(DEVICE_KEY, r.deviceSecret);
+      localStorage.setItem(MEMBER_KEY, '1');
+      onJoined();
+    } catch (e) { setFirst(''); setError(e.message); } finally { setBusy(false); }
+  };
+  return (
+    <main className="member-screen">
+      <Brand title={info ? 'Bienvenue ' + info.name : 'GBA Gestion'} subtitle={info && ROLES[info.role]} />
+      {!info && !error && <p>Vérification de l’invitation…</p>}
+      {info && info.hasEmail && <><GoogleButton /><p style={{ textAlign: 'center' }}>ou choisissez un code :</p></>}
+      {info && <PinPad key={first ? 'confirm' : 'first'} title={first ? 'Répétez le code' : 'Choisissez un code à 4 chiffres'} onDone={finish} busy={busy} error={error} />}
+      {!info && error && <p className="error" role="alert">{error}</p>}
+    </main>
+  );
+}
+
+const REFUSED = {
+  compte: 'Cette adresse Google n’a pas d’accès. Demandez à la direction de l’ajouter.',
+  google: 'Google n’a pas pu confirmer cette adresse.',
+  session: 'La connexion a expiré. Réessayez.',
+  annulee: 'Connexion annulée.',
+  configuration: 'La connexion Google n’est pas encore configurée.',
+};
+export function LoginScreen({ reason, onLogged }) {
+  const device = read(DEVICE_KEY);
+  const [error, setError] = useState(reason ? REFUSED[reason] || 'Connexion refusée.' : '');
+  const [busy, setBusy] = useState(false);
+  const login = async (pin) => {
+    setBusy(true);
+    try {
+      if (read(LOGOUT_PENDING_KEY)) {
+        await api('/api/auth/logout', { method: 'POST' });
+        localStorage.removeItem(LOGOUT_PENDING_KEY);
+      }
+      await api('/api/auth/pin', { method: 'POST', body: { secret: device, pin } });
+      setError('');
+      onLogged();
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  };
+  return (
+    <main className="member-screen">
+      <Brand title="GBA Gestion" subtitle="Espace équipe" />
+      {device ? <PinPad title="Entrez votre code" onDone={login} busy={busy} error={error} /> : <><GoogleButton />{error && <p className="error" role="alert">{error}</p>}</>}
+    </main>
+  );
+}
+
+function Card({ Icon, title, sub, tag }) {
+  return <div className="member-card"><Icon size={34} /><div><b>{title}</b>{sub && <small>{sub}</small>}{tag && <div><span className="member-tag">{tag}</span></div>}</div></div>;
+}
+export function MemberApp({ reason }) {
+  const [user, setUser] = useState(null);
+  const [data, setData] = useState(null);
+  const [state, setState] = useState('loading');
+  const [error, setError] = useState('');
+  const finishLogout = async () => {
+    await api('/api/auth/logout', { method: 'POST' });
+    localStorage.removeItem(LOGOUT_PENDING_KEY);
+    if (!read(DEVICE_KEY)) localStorage.removeItem(MEMBER_KEY);
+  };
+  const refresh = async () => {
+    setState('loading');
+    if (read(LOGOUT_PENDING_KEY)) {
+      // Une déconnexion n'a pas encore atteint le serveur : on la termine avant
+      // d'ouvrir quoi que ce soit, pour ne jamais réutiliser l'ancienne session.
+      try { await finishLogout(); } catch { /* toujours sans réseau */ }
+      setState('login');
+      return;
+    }
+    try {
+      const me = await api('/api/me');
+      if (me.user.role === 'direction' || hasOwnerData()) {
+        localStorage.removeItem(MEMBER_KEY);
+        location.replace('/');
+        return;
+      }
+      localStorage.setItem(MEMBER_KEY, '1');
+      setUser(me.user);
+      const ws = await api('/api/workspace');
+      setData(ws.data);
+      setError('');
+      setState('ready');
+    } catch (e) {
+      if (e.status === 401) { setState('login'); return; }
+      setError(e.message);
+      setState('error');
+    }
+  };
+  useEffect(() => { reason ? setState('login') : refresh(); }, []);
+  const logout = async () => {
+    localStorage.setItem(LOGOUT_PENDING_KEY, '1');
+    try { await finishLogout(); } catch { /* terminée au prochain retour du réseau */ }
+    setUser(null); setData(null); setState('login');
+  };
+  if (state === 'login') return <LoginScreen reason={reason} onLogged={refresh} />;
+  if (state === 'loading') return <main className="member-screen"><Brand title="GBA Gestion" /><p>Chargement…</p></main>;
+  if (state === 'error') return <main className="member-screen"><Brand title="GBA Gestion" /><p className="error" role="alert">{error}</p><button className="primary wide" onClick={refresh}>Réessayer</button></main>;
+  return <MemberSpace user={user} data={data} onRefresh={refresh} onLogout={logout} />;
+}
+
+const nameOf = (rows, id) => rows?.find((x) => x.id === id)?.name || '';
+const when = (x, projects) => [fmtDate(x.date), nameOf(projects, x.projectId)].filter(Boolean).join(' · ');
+const TABS = {
+  ouvrier: [['home', 'Accueil', House], ['tasks', 'Mes tâches', ListChecks], ['pay', 'Paiements', Money], ['projects', 'Chantiers', HardHat], ['journal', 'Journal', Notebook]],
+  gestionnaire: [['home', 'Accueil', House], ['projects', 'Chantiers', HardHat], ['expenses', 'Dépenses', Receipt], ['team', 'Équipe', Users], ['orders', 'Achats', Package]],
+  chef: [['home', 'Accueil', House], ['projects', 'Chantiers', HardHat], ['tasks', 'Tâches', ListChecks], ['crew', 'Équipe', Users], ['journal', 'Journal', Notebook]],
+};
+function Tile({ Icon, label, value, onClick }) {
+  return <button type="button" className="member-tile" onClick={onClick}><Icon size={28} /><b>{value}</b><small>{label}</small></button>;
+}
+function Soon({ Icon, label }) {
+  return <button type="button" className="member-soon" disabled><Icon size={30} /><span>{label}</span><small>Bientôt</small></button>;
+}
+function Empty({ text }) { return <p className="info">{text}</p>; }
+const paidOn = (data, taskId) => data.teamPayments.filter((p) => p.taskId === taskId).reduce((n, p) => n + Number(p.amount || 0), 0);
+const leftOn = (data, t) => Math.max(0, Number(t.agreedAmount || 0) - paidOn(data, t.id));
+const sumOf = (rows, f) => rows.reduce((n, x) => n + f(x), 0);
+function PayLine({ agreed, paid, left }) {
+  const pct = agreed > 0 ? Math.min(100, Math.round((paid / agreed) * 100)) : 0;
+  return <div className="member-pay"><div className="member-bar"><i style={{ width: pct + '%' }} /></div><div className="member-pay-row"><span>Payé <b>{money(paid)}</b></span><span>Reste <b>{money(left)}</b></span></div><small>Convenu : {money(agreed)}</small></div>;
+}
+function PayTab({ data }) {
+  if (!data.tasks.length) return <Empty text="Aucune tâche ne vous est attribuée." />;
+  const sites = [...new Set(data.tasks.map((t) => t.projectId))];
+  return <>
+    <div className="member-tiles">
+      <div className="member-tile"><Money size={28} /><b>{money(sumOf(data.tasks, (t) => paidOn(data, t.id)))}</b><small>Déjà payé</small></div>
+      <div className="member-tile"><Money size={28} /><b>{money(sumOf(data.tasks, (t) => leftOn(data, t)))}</b><small>Reste à payer</small></div>
+    </div>
+    {sites.map((site) => {
+      const tasks = data.tasks.filter((t) => t.projectId === site);
+      return <section key={site}>
+        <h2>{nameOf(data.projects, site) || 'Chantier'}</h2>
+        <PayLine agreed={sumOf(tasks, (t) => Number(t.agreedAmount || 0))} paid={sumOf(tasks, (t) => paidOn(data, t.id))} left={sumOf(tasks, (t) => leftOn(data, t))} />
+        {tasks.map((t) => <div className="member-card member-budget" key={t.id}><div><b>{t.description}</b><PayLine agreed={Number(t.agreedAmount || 0)} paid={paidOn(data, t.id)} left={leftOn(data, t)} />{data.teamPayments.filter((p) => p.taskId === t.id).map((p) => <small key={p.id} className="member-pay-item">{fmtDate(p.date)} · {money(p.amount)}{p.method ? ' · ' + p.method : ''}</small>)}</div></div>)}
+      </section>;
+    })}
+  </>;
+}
+function HomeTab({ user, data, go }) {
+  const active = (rows) => rows.filter((x) => x.status !== 'Terminé').length;
+  if (user.role === 'ouvrier') {
+    return <>
+      <div className="member-tiles">
+        <Tile Icon={Money} label="Déjà payé" value={money(sumOf(data.tasks, (t) => paidOn(data, t.id)))} onClick={() => go('pay')} />
+        <Tile Icon={Money} label="Reste à payer" value={money(sumOf(data.tasks, (t) => leftOn(data, t)))} onClick={() => go('pay')} />
+        <Tile Icon={ListChecks} label="Tâches à faire" value={active(data.tasks)} onClick={() => go('tasks')} />
+        <Tile Icon={HardHat} label="Mes chantiers" value={data.projects.length} onClick={() => go('projects')} />
+      </div>
+      <h2>Signaler</h2>
+      <div className="member-soons"><Soon Icon={CheckCircle} label="Travail fait" /><Soon Icon={Warning} label="Problème" /><Soon Icon={Package} label="Besoin de matériel" /></div>
+    </>;
+  }
+  if (user.role === 'gestionnaire') {
+    const spent = data.expenses.reduce((n, x) => n + Number(x.amount || 0), 0);
+    const paid = data.teamPayments.reduce((n, x) => n + Number(x.amount || 0), 0);
+    const agreed = data.tasks.reduce((n, x) => n + Number(x.agreedAmount || 0), 0);
+    return <>
+      <div className="member-tiles">
+        <Tile Icon={HardHat} label="Chantiers" value={data.projects.length} onClick={() => go('projects')} />
+        <Tile Icon={Receipt} label="Dépenses" value={money(spent)} onClick={() => go('expenses')} />
+        <Tile Icon={Users} label="Reste à payer à l’équipe" value={money(Math.max(0, agreed - paid))} onClick={() => go('team')} />
+        <Tile Icon={Package} label="Commandes en cours" value={data.orders.filter((o) => o.status !== 'Reçu').length} onClick={() => go('orders')} />
+      </div>
+      <h2>Budget des chantiers</h2>
+      {data.projects.map((p) => {
+        const used = data.expenses.filter((x) => x.projectId === p.id).reduce((n, x) => n + Number(x.amount || 0), 0);
+        const pct = p.budget > 0 ? Math.round((used / p.budget) * 100) : 0;
+        return <div className="member-card member-budget" key={p.id}><div><b>{p.name}</b><small>{money(used)} sur {money(p.budget)}</small><div className="member-bar"><i style={{ width: Math.min(pct, 100) + '%' }} className={pct > 100 ? 'over' : ''} /></div></div></div>;
+      })}
+      <h2>Actions</h2>
+      <div className="member-soons"><Soon Icon={Plus} label="Ajouter une dépense" /><Soon Icon={Camera} label="Scanner une facture" /></div>
+    </>;
+  }
+  return <>
+    <div className="member-tiles">
+      <Tile Icon={HardHat} label="Chantiers" value={data.projects.length} onClick={() => go('projects')} />
+      <Tile Icon={ListChecks} label="Tâches en cours" value={active(data.tasks)} onClick={() => go('tasks')} />
+      <Tile Icon={Users} label="Ouvriers" value={data.employees.length} onClick={() => go('crew')} />
+      <Tile Icon={Notebook} label="Notes de chantier" value={data.journal.length} onClick={() => go('journal')} />
+    </div>
+    <h2>Actions</h2>
+    <div className="member-soons"><Soon Icon={Notebook} label="Note de chantier" /><Soon Icon={Warning} label="Signaler un problème" /><Soon Icon={Camera} label="Scanner une facture" /></div>
+  </>;
+}
+function TabContent({ tab, user, data, go }) {
+  const list = (rows, empty, render) => (rows.length ? rows.map(render) : <Empty text={empty} />);
+  if (tab === 'home') return <HomeTab user={user} data={data} go={go} />;
+  if (tab === 'pay') return <PayTab data={data} />;
+  if (tab === 'tasks' && user.role === 'chef') return list(data.tasks, 'Aucune tâche sur vos chantiers.', (t) => <Card key={t.id} Icon={ListChecks} title={t.description} sub={[nameOf(data.employees, t.employeeId), nameOf(data.projects, t.projectId)].filter(Boolean).join(' · ')} tag={t.status} />);
+  if (tab === 'crew') return list(data.employees, 'Aucun ouvrier sur vos chantiers.', (e) => <Card key={e.id} Icon={Users} title={e.name} sub={[e.role, e.phone].filter(Boolean).join(' · ')} tag={data.tasks.filter((t) => t.employeeId === e.id && t.status !== 'Terminé').length + ' tâche(s) en cours'} />);
+  if (tab === 'tasks') return list(data.tasks, 'Aucune tâche ne vous est attribuée.', (t) => <Card key={t.id} Icon={ListChecks} title={t.description} sub={[nameOf(data.projects, t.projectId), 'Reste à payer : ' + money(leftOn(data, t))].filter(Boolean).join(' · ')} tag={t.status} />);
+  if (tab === 'projects') return list(data.projects, 'Aucun chantier ne vous est encore attribué.', (p) => <Card key={p.id} Icon={HardHat} title={p.name} sub={p.address} tag={p.status} />);
+  if (tab === 'journal') return list(data.journal, 'Aucune note pour le moment.', (j) => <Card key={j.id} Icon={Notebook} title={j.note} sub={when(j, data.projects)} tag={j.kind} />);
+  if (tab === 'expenses') return list(data.expenses, 'Aucune dépense pour le moment.', (x) => <Card key={x.id} Icon={Receipt} title={x.description} sub={when(x, data.projects)} tag={money(x.amount)} />);
+  if (tab === 'team') {
+    return list(data.tasks, 'Aucune tâche sur vos chantiers.', (t) => {
+      const paid = data.teamPayments.filter((p) => p.taskId === t.id).reduce((n, p) => n + Number(p.amount || 0), 0);
+      return <Card key={t.id} Icon={Users} title={t.description} sub={[nameOf(data.employees, t.employeeId), nameOf(data.projects, t.projectId)].filter(Boolean).join(' · ')} tag={'Payé ' + money(paid) + ' sur ' + money(t.agreedAmount)} />;
+    });
+  }
+  if (tab === 'orders') return list(data.orders, 'Aucune commande pour le moment.', (o) => <Card key={o.id} Icon={Package} title={o.description || o.number} sub={[o.number, nameOf(data.suppliers, o.supplierId), nameOf(data.projects, o.projectId)].filter(Boolean).join(' · ')} tag={o.status} />);
+  return null;
+}
+function MemberSpace({ user, data, onRefresh, onLogout }) {
+  const [tab, setTab] = useState('home');
+  const tabs = TABS[user.role] || TABS.ouvrier;
+  const title = tabs.find(([k]) => k === tab)?.[1];
+  return (
+    <>
+      <main className="member-screen member-with-tabs">
+        <Brand title={tab === 'home' ? 'Bonjour ' + user.name : title} subtitle={ROLES[user.role]} />
+        {data ? <TabContent tab={tab} user={user} data={data} go={setTab} /> : <Empty text="Les données de l’entreprise ne sont pas encore disponibles." />}
+        {tab === 'home' && <div className="chips member-actions"><button onClick={onRefresh}>Actualiser</button><button onClick={onLogout}><SignOut /> Se déconnecter</button></div>}
+      </main>
+      <nav className="bottom">{tabs.map(([k, label, Icon]) => <button key={k} className={tab === k ? 'active' : ''} onClick={() => { setTab(k); window.scrollTo(0, 0); }}><Icon size={25} weight={tab === k ? 'fill' : 'regular'} /><span>{label}</span></button>)}</nav>
+    </>
+  );
+}
+
+const COUNT_LABELS = { clients: 'clients', projects: 'chantiers', quotes: 'devis', invoices: 'factures', payments: 'paiements', expenses: 'dépenses', employees: 'membres d’équipe', tasks: 'tâches', suppliers: 'fournisseurs', materials: 'matériaux' };
+const countsText = (c) => Object.entries(COUNT_LABELS).filter(([k]) => c[k]).map(([k, label]) => c[k] + ' ' + label).join(' · ') || 'aucune donnée';
+const SYNC_TEXT = {
+  sending: 'Envoi en cours…',
+  ok: 'À jour : l’équipe voit vos dernières données.',
+  offline: 'Pas de réseau : l’envoi reprendra tout seul. Vos données restent sur cet appareil.',
+  conflict: 'Une autre version existe en ligne : l’envoi automatique est en pause, rien n’a été remplacé.',
+  auth: 'Votre connexion a expiré : rouvrez la gestion de l’équipe pour reprendre l’envoi.',
+  refused: 'Le serveur a refusé les données : rien n’a été remplacé.',
+  tooBig: 'Données trop volumineuses pour l’envoi automatique.',
+  empty: 'Cet appareil est vide : rien n’a été envoyé.',
+};
+function TransferPanel({ getState, backupNow, engine, syncStatus, onDone }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [ask, setAsk] = useState(null);
+  const [report, setReport] = useState(null);
+  const cfg = readSync();
+  const local = counts(getState());
+  const go = async (overwriteRevision) => {
+    setBusy(true); setError(''); setAsk(null);
+    try {
+      if (engine && !engine.canRun()) throw Error('Cet onglet n’est plus à jour. Rechargez la page avant de transférer.');
+      backupNow();
+      const r = await transferAll(getState, { overwriteRevision });
+      if (r.needsConfirm) setAsk(r); else { setReport(r); onDone(); }
+    } catch (e) { setError(e.status === 0 || e instanceof TypeError ? 'Pas de réseau : réessayez plus tard. Vos données n’ont pas bougé.' : e.message); } finally { setBusy(false); }
+  };
+  return (
+    <div className="team-member">
+      <h4>Transfert vers la base commune</h4>
+      {!cfg.enabled && !report && <p>Sur cet appareil : {countsText(local)}. Une sauvegarde sera téléchargée, puis une copie sera envoyée et vérifiée. Les données de cet appareil ne sont pas modifiées.</p>}
+      {report && <div className="info" role="status"><b>Transfert réussi et vérifié.</b><br />{countsText(report.sent)}.{report.withoutAttachments ? ` Les ${report.attachmentsKept} pièce(s) jointe(s) restent uniquement sur cet appareil, car elles sont trop volumineuses.` : ''}</div>}
+      {cfg.enabled && !report && <p role="status">{SYNC_TEXT[syncStatus] || SYNC_TEXT.ok}{cfg.at ? ' Dernier envoi : ' + fmtDate(cfg.at) + ' à ' + String(cfg.at).slice(11, 16) + ' (UTC).' : ''}{cfg.withoutAttachments ? ' Les pièces jointes restent uniquement sur cet appareil.' : ''}</p>}
+      {ask && <div className="error" role="alert"><b>Des données existent déjà en ligne :</b> {countsText(ask.remoteCounts)}.<br />Elles ne viennent pas de cet appareil. Les remplacer par les données de cet appareil ({countsText(local)}) ?<div className="chips"><button className="danger" disabled={busy} onClick={() => go(ask.remoteRevision)}>Remplacer les données en ligne</button><button onClick={() => setAsk(null)}>Annuler</button></div></div>}
+      {error && <p className="error" role="alert">{error}</p>}
+      <div className="chips">
+        {!cfg.enabled && !ask && <button className="primary" disabled={busy} onClick={() => go()}>{busy ? 'Transfert en cours…' : 'Transférer mes données'}</button>}
+        {cfg.enabled && <button disabled={busy} onClick={() => engine?.runNow()}>Envoyer maintenant</button>}
+        {cfg.enabled && syncStatus === 'conflict' && !ask && <button disabled={busy} onClick={() => go()}>Voir la version en ligne</button>}
+      </div>
+    </div>
+  );
+}
+
+function inviteUrl(token) { return location.origin + '/#invite=' + token; }
+function qrImage(text) { const q = qrcode(0, 'M'); q.addData(text); q.make(); return q.createDataURL(6, 8); }
+
+function MemberForm({ workspace, onSaved }) {
+  const blank = { name: '', role: 'ouvrier', email: '', employeeId: '', projectIds: [] };
+  const [form, setForm] = useState(blank);
+  const [error, setError] = useState('');
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const toggle = (id) => set('projectIds', form.projectIds.includes(id) ? form.projectIds.filter((x) => x !== id) : [...form.projectIds, id]);
+  return (
+    <form className="team-member" onSubmit={async (e) => {
+      e.preventDefault();
+      try { await api('/api/users', { method: 'POST', body: form }); setForm(blank); setError(''); onSaved(); } catch (x) { setError(x.message); }
+    }}>
+      <h4><UserPlus /> Ajouter un membre</h4>
+      <label>Nom<input required maxLength="80" value={form.name} onChange={(e) => set('name', e.target.value)} /></label>
+      <label>Rôle<select value={form.role} onChange={(e) => set('role', e.target.value)}>{Object.entries(ROLES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label>
+      <label>Adresse Gmail (facultatif)<input type="email" value={form.email} onChange={(e) => set('email', e.target.value)} /></label>
+      {form.role === 'ouvrier' && !!workspace?.employees?.length && <label>Fiche dans l’équipe<select value={form.employeeId} onChange={(e) => set('employeeId', e.target.value)}><option value="">Choisir…</option>{workspace.employees.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select></label>}
+      {form.role !== 'direction' && !!workspace?.projects?.length && <div className="team-checks"><b>Chantiers autorisés</b>{workspace.projects.map((p) => <label key={p.id}><input type="checkbox" checked={form.projectIds.includes(p.id)} onChange={() => toggle(p.id)} />{p.name}</label>)}</div>}
+      {error && <p className="error" role="alert">{error}</p>}
+      <button className="primary wide" type="submit">Créer le compte</button>
+    </form>
+  );
+}
+export function TeamAdmin({ getState, backupNow, engine, syncStatus }) {
+  const [status, setStatus] = useState('loading');
+  const [key, setKey] = useState('');
+  const [users, setUsers] = useState([]);
+  const [workspace, setWorkspace] = useState(null);
+  const [invite, setInvite] = useState(null);
+  const [error, setError] = useState('');
+  const load = async () => {
+    try {
+      const me = await api('/api/me');
+      if (me.user.role !== 'direction') { setStatus('forbidden'); return; }
+      const [list, ws] = await Promise.all([api('/api/users'), api('/api/workspace')]);
+      setUsers(list.users); setWorkspace(ws.data); setError(''); setStatus('ready');
+    } catch (e) {
+      if (e.status === 401) { setStatus('key'); return; }
+      setError(e.message); setStatus('unavailable');
+    }
+  };
+  useEffect(() => { load(); }, []);
+  const openWithKey = async (e) => {
+    e.preventDefault();
+    try {
+      await api('/api/setup', { method: 'POST', body: {}, headers: { Authorization: 'Bearer ' + key } });
+      setKey(''); await load();
+    } catch (x) { setError(x.message); }
+  };
+  const makeInvite = async (u) => {
+    try { const r = await api(`/api/users/${u.id}/invite`, { method: 'POST' }); setInvite({ name: u.name, url: inviteUrl(r.token) }); setError(''); } catch (x) { setError(x.message); }
+  };
+  const setActive = async (u, active) => {
+    if (!active && !confirm(`Couper immédiatement l’accès de ${u.name} ?`)) return;
+    try { await api(`/api/users/${u.id}`, { method: 'PATCH', body: { active } }); if (!active) setInvite(null); await load(); } catch (x) { setError(x.message); }
+  };
+  return (
+    <section>
+      <h3>Équipe & accès</h3>
+      {status === 'loading' && <p className="subtle">Vérification…</p>}
+      {status === 'unavailable' && <p className="subtle">Service d’équipe indisponible pour le moment : {error}</p>}
+      {status === 'forbidden' && <p className="subtle">Accès réservé à la direction.</p>}
+      {status === 'key' && <form onSubmit={openWithKey}><p className="subtle">Saisissez la clé privée Cloudflare pour ouvrir la gestion de l’équipe. Elle n’est pas conservée.</p><label>Clé privée<input type="password" autoComplete="off" value={key} onChange={(e) => setKey(e.target.value)} /></label>{error && <p className="error" role="alert">{error}</p>}<button className="secondary wide" type="submit" disabled={!key}>Ouvrir la gestion de l’équipe</button></form>}
+      {status === 'ready' && <>
+        <TransferPanel getState={getState} backupNow={backupNow} engine={engine} syncStatus={syncStatus} onDone={load} />
+        {users.map((u) => <div key={u.id} className={'team-member' + (u.active ? '' : ' off')}><b>{u.name}</b><br /><small>{ROLES[u.role]}{u.email ? ' · ' + u.email : ''}{u.role !== 'direction' ? ' · ' + u.projectIds.length + ' chantier(s)' : ''}{u.active ? '' : ' · Désactivé'}</small><div className="chips">{u.active && u.role !== 'direction' && <button onClick={() => makeInvite(u)}><QrCode /> Inviter</button>}{u.role !== 'direction' && (u.active ? <button className="danger" onClick={() => setActive(u, false)}>Couper l’accès</button> : <button onClick={() => setActive(u, true)}>Réactiver</button>)}</div></div>)}
+        {invite && <div className="qr-box"><b>Invitation de {invite.name}</b><p>À scanner une seule fois avec son téléphone. Valable 7 jours.</p><img src={qrImage(invite.url)} alt={'QR code d’invitation de ' + invite.name} /><code>{invite.url}</code><div className="chips"><button onClick={() => navigator.clipboard?.writeText(invite.url)}>Copier le lien</button><button onClick={() => setInvite(null)}>Masquer</button></div></div>}
+        {error && <p className="error" role="alert">{error}</p>}
+        <MemberForm workspace={workspace} onSaved={load} />
+      </>}
+    </section>
+  );
+}
+
+// Choisit l'écran d'ouverture. L'application de la direction reste celle par défaut.
+export function firstScreen() {
+  const hash = location.hash || '';
+  const clean = () => history.replaceState(null, '', location.pathname);
+  if (hash.startsWith('#invite=')) { const token = decodeURIComponent(hash.slice(8)); clean(); return { screen: 'join', token }; }
+  if (hash.startsWith('#connexion-refusee=')) { const reason = hash.slice(19); clean(); return { screen: 'member', reason }; }
+  if (hash === '#connecte' || hash === '#connexion') { clean(); return { screen: 'member' }; }
+  if (!hasOwnerData() && (read(DEVICE_KEY) || read(MEMBER_KEY))) return { screen: 'member' };
+  return { screen: 'owner' };
+}

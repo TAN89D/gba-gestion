@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.wrangler/
+.wrangler-test/
+.dev.vars
+wrangler.test-local.jsonc
+*.log

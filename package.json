@@ -10,9 +10,10 @@
     "deploy": "npm run build && wrangler deploy"
   },
   "dependencies": {
+    "@phosphor-icons/react": "^2.1.7",
+    "qrcode-generator": "1.4.4",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "@phosphor-icons/react": "^2.1.7"
+    "react-dom": "^19.0.0"
   },
   "devDependencies": {
     "vite": "^6.1.0",
