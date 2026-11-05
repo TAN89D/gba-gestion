@@ -4,6 +4,8 @@ import { HardHat, ListChecks, Notebook, Receipt, Package, SignOut, Backspace, Go
 import { ROLES } from './permissions.js';
 import { money, fmtDate } from './domain.js';
 import { readSync, counts, transferAll } from './sync.js';
+import { reservedOn } from './entries.js';
+import { EntryForm, FORM_TITLES, MyEntries, PhotoGrid, ReportButton } from './entries.jsx';
 import './team.css';
 
 const DEVICE_KEY = 'gba-device';
@@ -139,6 +141,10 @@ export function MemberApp({ reason }) {
     localStorage.removeItem(LOGOUT_PENDING_KEY);
     if (!read(DEVICE_KEY)) localStorage.removeItem(MEMBER_KEY);
   };
+  const reload = async () => {
+    const [ws, list] = await Promise.all([api('/api/workspace'), api('/api/entries')]);
+    setData(ws.data ? { ...ws.data, entries: list.entries } : null);
+  };
   const refresh = async () => {
     setState('loading');
     if (read(LOGOUT_PENDING_KEY)) {
@@ -157,8 +163,7 @@ export function MemberApp({ reason }) {
       }
       localStorage.setItem(MEMBER_KEY, '1');
       setUser(me.user);
-      const ws = await api('/api/workspace');
-      setData(ws.data);
+      await reload();
       setError('');
       setState('ready');
     } catch (e) {
@@ -176,7 +181,7 @@ export function MemberApp({ reason }) {
   if (state === 'login') return <LoginScreen reason={reason} onLogged={refresh} />;
   if (state === 'loading') return <main className="member-screen"><Brand title="GBA Gestion" /><p>Chargement…</p></main>;
   if (state === 'error') return <main className="member-screen"><Brand title="GBA Gestion" /><p className="error" role="alert">{error}</p><button className="primary wide" onClick={refresh}>Réessayer</button></main>;
-  return <MemberSpace user={user} data={data} onRefresh={refresh} onLogout={logout} />;
+  return <MemberSpace user={user} data={data} onRefresh={refresh} onReload={reload} onLogout={logout} />;
 }
 
 const nameOf = (rows, id) => rows?.find((x) => x.id === id)?.name || '';
@@ -189,15 +194,15 @@ const TABS = {
 function Tile({ Icon, label, value, onClick }) {
   return <button type="button" className="member-tile" onClick={onClick}><Icon size={28} /><b>{value}</b><small>{label}</small></button>;
 }
-function Soon({ Icon, label }) {
-  return <button type="button" className="member-soon" disabled><Icon size={30} /><span>{label}</span><small>Bientôt</small></button>;
+function Act({ Icon, label, onClick }) {
+  return <button type="button" className="member-soon" onClick={onClick}><Icon size={30} /><span>{label}</span></button>;
 }
 function Empty({ text }) { return <p className="info">{text}</p>; }
 const paidOn = (data, taskId) => data.teamPayments.filter((p) => p.taskId === taskId).reduce((n, p) => n + Number(p.amount || 0), 0);
 const leftOn = (data, t) => Math.max(0, Number(t.agreedAmount || 0) - paidOn(data, t.id));
 const sumOf = (rows, f) => rows.reduce((n, x) => n + f(x), 0);
 // Ce qui consomme le budget confié : les dépenses du chantier et les paiements de l'équipe.
-const usedOn = (data, projectId) => sumOf(data.expenses.filter((x) => x.projectId === projectId), (x) => Number(x.amount || 0)) + sumOf(data.teamPayments.filter((x) => x.projectId === projectId), (x) => Number(x.amount || 0));
+const usedOn = (data, projectId) => sumOf(data.expenses.filter((x) => x.projectId === projectId), (x) => Number(x.amount || 0)) + sumOf(data.teamPayments.filter((x) => x.projectId === projectId), (x) => Number(x.amount || 0)) + reservedOn(data.entries, projectId, data);
 function PayLine({ agreed, paid, left }) {
   const pct = agreed > 0 ? Math.min(100, Math.round((paid / agreed) * 100)) : 0;
   return <div className="member-pay"><div className="member-bar"><i style={{ width: pct + '%' }} /></div><div className="member-pay-row"><span>Payé <b>{money(paid)}</b></span><span>Reste <b>{money(left)}</b></span></div><small>Convenu : {money(agreed)}</small></div>;
@@ -220,7 +225,7 @@ function PayTab({ data }) {
     })}
   </>;
 }
-function HomeTab({ user, data, go, openSite }) {
+function HomeTab({ user, data, go, openSite, doAction }) {
   const active = (rows) => rows.filter((x) => x.status !== 'Terminé').length;
   if (user.role === 'ouvrier') {
     return <>
@@ -231,7 +236,8 @@ function HomeTab({ user, data, go, openSite }) {
         <Tile Icon={HardHat} label="Mes chantiers" value={data.projects.length} onClick={() => go('projects')} />
       </div>
       <h2>Signaler</h2>
-      <div className="member-soons"><Soon Icon={CheckCircle} label="Travail fait" /><Soon Icon={Warning} label="Problème" /><Soon Icon={Package} label="Besoin de matériel" /></div>
+      <div className="member-soons"><Act Icon={CheckCircle} label="Travail fait" onClick={() => doAction('done')} /><Act Icon={Camera} label="Photo du chantier" onClick={() => doAction('photo')} /><Act Icon={Warning} label="Problème" onClick={() => doAction('incident')} /><Act Icon={Package} label="Besoin de matériel" onClick={() => doAction('need')} /></div>
+      <MyEntries entries={data.entries || []} />
     </>;
   }
   if (user.role === 'gestionnaire') {
@@ -256,7 +262,8 @@ function HomeTab({ user, data, go, openSite }) {
         return <button type="button" className="member-link" key={p.id} onClick={() => openSite(p.id)}><div className="member-card member-budget"><div><b>{p.name}</b><small>{budget > 0 ? money(used) + ' utilisés sur ' + money(budget) : money(used) + ' utilisés · aucun budget confié'}</small><div className="member-bar"><i style={{ width: Math.min(pct, 100) + '%' }} className={pct > 100 ? 'over' : ''} /></div></div></div></button>;
       })}
       <h2>Actions</h2>
-      <div className="member-soons"><Soon Icon={Plus} label="Ajouter une dépense" /><Soon Icon={Camera} label="Scanner une facture" /></div>
+      <div className="member-soons"><Act Icon={Plus} label="Ajouter une dépense" onClick={() => doAction('expense')} /><Act Icon={Receipt} label="Scanner une facture" onClick={() => doAction('scan')} /><Act Icon={Money} label="Payer un ouvrier" onClick={() => doAction('teamPayment')} /><Act Icon={Warning} label="Signaler un incident" onClick={() => doAction('incident')} /><Act Icon={Camera} label="Photo du chantier" onClick={() => doAction('photo')} /></div>
+      <MyEntries entries={data.entries || []} />
     </>;
   }
   return <>
@@ -267,11 +274,14 @@ function HomeTab({ user, data, go, openSite }) {
       <Tile Icon={Notebook} label="Notes de chantier" value={data.journal.length} onClick={() => go('journal')} />
     </div>
     <h2>Actions</h2>
-    <div className="member-soons"><Soon Icon={Notebook} label="Note de chantier" /><Soon Icon={Warning} label="Signaler un problème" /><Soon Icon={Camera} label="Scanner une facture" /></div>
+    <div className="member-soons"><Act Icon={Camera} label="Photo du chantier" onClick={() => doAction('photo')} /><Act Icon={Warning} label="Signaler un incident" onClick={() => doAction('incident')} /><Act Icon={Package} label="Besoin de matériel" onClick={() => doAction('need')} /></div>
+    <MyEntries entries={data.entries || []} />
   </>;
 }
-function SiteDetail({ project, data, user, onBack }) {
+function SiteDetail({ project, data, user, onBack, doAction }) {
   const onSite = (x) => x.projectId === project.id;
+  const siteEntries = (data.entries || []).filter(onSite);
+  const money4 = user.role === 'gestionnaire';
   const expenses = data.expenses.filter(onSite);
   const tasks = data.tasks.filter(onSite);
   const orders = data.orders.filter(onSite);
@@ -289,16 +299,26 @@ function SiteDetail({ project, data, user, onBack }) {
         ? <><b>Reste : {money(budget - spent)}</b><small>{money(spent)} utilisés sur {money(budget)} confiés ({pct} %)</small><div className="member-bar"><i style={{ width: Math.min(pct, 100) + '%' }} className={pct > 100 ? 'over' : ''} /></div></>
         : <><b>{money(spent)} utilisés</b><small>Aucun budget ne vous a encore été confié sur ce chantier.</small></>)}
     </div></div>
+    <div className="member-soons">
+      <Act Icon={Camera} label="Photo" onClick={() => doAction('photo', project.id)} />
+      <Act Icon={Warning} label="Incident" onClick={() => doAction('incident', project.id)} />
+      {money4 && <Act Icon={Plus} label="Dépense" onClick={() => doAction('expense', project.id)} />}
+      {money4 && <Act Icon={Receipt} label="Scanner" onClick={() => doAction('scan', project.id)} />}
+      {money4 && <Act Icon={Money} label="Payer un ouvrier" onClick={() => doAction('teamPayment', project.id)} />}
+    </div>
+    <ReportButton company={data.settings?.company} project={project} data={data} entries={data.entries || []} />
+    <PhotoGrid entries={siteEntries} />
+    <MyEntries entries={siteEntries} title="Saisies et incidents" />
     {part('Tâches', tasks, (t) => <Card key={t.id} Icon={ListChecks} title={t.description} sub={[nameOf(data.employees, t.employeeId), user.role === 'ouvrier' ? 'Reste à payer : ' + money(leftOn(data, t)) : showMoney ? 'Payé ' + money(paidOn(data, t.id)) + ' sur ' + money(t.agreedAmount) : ''].filter(Boolean).join(' · ')} tag={t.status} />)}
     {part('Dépenses', expenses, (x) => <Card key={x.id} Icon={Receipt} title={x.description} sub={fmtDate(x.date)} tag={money(x.amount)} />)}
     {part('Commandes', orders, (o) => <Card key={o.id} Icon={Package} title={o.description || o.number} sub={[o.number, nameOf(data.suppliers, o.supplierId)].filter(Boolean).join(' · ')} tag={o.status} />)}
     {part('Journal', journal, (j) => <Card key={j.id} Icon={Notebook} title={j.note} sub={fmtDate(j.date)} tag={j.kind} />)}
-    {!tasks.length && !expenses.length && !orders.length && !journal.length && <Empty text="Rien n’est encore enregistré sur ce chantier." />}
+    {!tasks.length && !expenses.length && !orders.length && !journal.length && !siteEntries.length && <Empty text="Rien n’est encore enregistré sur ce chantier." />}
   </>;
 }
-function TabContent({ tab, user, data, go, openSite }) {
+function TabContent({ tab, user, data, go, openSite, doAction }) {
   const list = (rows, empty, render) => (rows.length ? rows.map(render) : <Empty text={empty} />);
-  if (tab === 'home') return <HomeTab user={user} data={data} go={go} openSite={openSite} />;
+  if (tab === 'home') return <HomeTab user={user} data={data} go={go} openSite={openSite} doAction={doAction} />;
   if (tab === 'pay') return <PayTab data={data} />;
   if (tab === 'tasks' && user.role === 'chef') return list(data.tasks, 'Aucune tâche sur vos chantiers.', (t) => <Card key={t.id} Icon={ListChecks} title={t.description} sub={[nameOf(data.employees, t.employeeId), nameOf(data.projects, t.projectId)].filter(Boolean).join(' · ')} tag={t.status} />);
   if (tab === 'crew') return list(data.employees, 'Aucun ouvrier sur vos chantiers.', (e) => <Card key={e.id} Icon={Users} title={e.name} sub={[e.role, e.phone].filter(Boolean).join(' · ')} tag={data.tasks.filter((t) => t.employeeId === e.id && t.status !== 'Terminé').length + ' tâche(s) en cours'} />);
@@ -315,22 +335,27 @@ function TabContent({ tab, user, data, go, openSite }) {
   if (tab === 'orders') return list(data.orders, 'Aucune commande pour le moment.', (o) => <Card key={o.id} Icon={Package} title={o.description || o.number} sub={[o.number, nameOf(data.suppliers, o.supplierId), nameOf(data.projects, o.projectId)].filter(Boolean).join(' · ')} tag={o.status} />);
   return null;
 }
-function MemberSpace({ user, data, onRefresh, onLogout }) {
+function MemberSpace({ user, data, onRefresh, onReload, onLogout }) {
   const [tab, setTab] = useState('home');
   const [site, setSite] = useState(null);
+  const [action, setAction] = useState(null);
+  const [sent, setSent] = useState('');
+  const doAction = (type, projectId) => { setAction({ type, projectId }); setSent(''); window.scrollTo(0, 0); };
   const tabs = TABS[user.role] || TABS.ouvrier;
-  const open = (k) => { setTab(k); setSite(null); window.scrollTo(0, 0); };
+  const open = (k) => { setTab(k); setSite(null); setAction(null); setSent(''); window.scrollTo(0, 0); };
   const openSite = (id) => { setSite(id); window.scrollTo(0, 0); };
   const project = site && data?.projects.find((p) => p.id === site);
-  const title = project ? project.name : tabs.find(([k]) => k === tab)?.[1];
+  const title = action ? FORM_TITLES[action.type] : project ? project.name : tabs.find(([k]) => k === tab)?.[1];
   return (
     <>
       <main className="member-screen member-with-tabs">
-        <Brand title={!project && tab === 'home' ? 'Bonjour ' + user.name : title} subtitle={ROLES[user.role]} />
+        <Brand title={!action && !project && tab === 'home' ? 'Bonjour ' + user.name : title} subtitle={ROLES[user.role]} />
+        {sent && !action && <p className="info" role="status">{sent}</p>}
         {!data && <Empty text="Les données de l’entreprise ne sont pas encore disponibles." />}
-        {project && <SiteDetail project={project} data={data} user={user} onBack={() => setSite(null)} />}
-        {data && !project && <TabContent tab={tab} user={user} data={data} go={open} openSite={openSite} />}
-        {tab === 'home' && !project && <div className="chips member-actions"><button onClick={onRefresh}>Actualiser</button><button onClick={onLogout}><SignOut /> Se déconnecter</button></div>}
+        {data && action && <EntryForm key={action.type + (action.projectId || '')} action={action} data={data} onCancel={() => setAction(null)} onDone={async (kind) => { await onReload(); setAction(null); setSent(['expense', 'teamPayment'].includes(kind) ? 'Envoyé. La direction doit maintenant valider cette saisie.' : 'Envoyé. C’est enregistré dans le dossier du chantier.'); window.scrollTo(0, 0); }} />}
+        {!action && project && <SiteDetail project={project} data={data} user={user} onBack={() => setSite(null)} doAction={doAction} />}
+        {!action && data && !project && <TabContent tab={tab} user={user} data={data} go={open} openSite={openSite} doAction={doAction} />}
+        {!action && tab === 'home' && !project && <div className="chips member-actions"><button onClick={onRefresh}>Actualiser</button><button onClick={onLogout}><SignOut /> Se déconnecter</button></div>}
       </main>
       <nav className="bottom">{tabs.map(([k, label, Icon]) => <button key={k} className={tab === k && !site ? 'active' : ''} onClick={() => open(k)}><Icon size={25} weight={tab === k && !site ? 'fill' : 'regular'} /><span>{label}</span></button>)}</nav>
     </>
@@ -401,7 +426,7 @@ export function MemberForm({ workspace, onSaved }) {
       <label>Rôle<select value={form.role} onChange={(e) => set('role', e.target.value)}>{Object.entries(ROLES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label>
       <label>Adresse Gmail (facultatif)<input type="email" value={form.email} onChange={(e) => set('email', e.target.value)} /></label>
       {form.role === 'ouvrier' && !!workspace?.employees?.length && <label>Fiche dans l’équipe<select value={form.employeeId} onChange={(e) => set('employeeId', e.target.value)}><option value="">Choisir…</option>{workspace.employees.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select></label>}
-      {form.role !== 'direction' && !!workspace?.projects?.length && <div className="team-checks"><b>Chantiers autorisés</b>{workspace.projects.map((p) => <label key={p.id}><input type="checkbox" checked={form.projectIds.includes(p.id)} onChange={() => toggle(p.id)} />{p.name}</label>)}</div>}
+      {['chef', 'ouvrier'].includes(form.role) && !!workspace?.projects?.length && <div className="team-checks"><b>Chantiers autorisés</b>{workspace.projects.map((p) => <label key={p.id}><input type="checkbox" checked={form.projectIds.includes(p.id)} onChange={() => toggle(p.id)} />{p.name}</label>)}</div>}
       {error && <p className="error" role="alert">{error}</p>}
       <button className="primary wide" type="submit">Créer le compte</button>
     </form>

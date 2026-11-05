@@ -338,6 +338,144 @@ async function createInvite(request, env, id) {
   return reply({ token, expiresAt: expires }, 201);
 }
 
+// ---- Saisies de l'équipe : dépenses et paiements à valider, incidents, photos de chantier ----
+const ENTRY_KINDS = { direction: ['expense', 'teamPayment', 'incident', 'photo'], gestionnaire: ['expense', 'teamPayment', 'incident', 'photo'], chef: ['incident', 'photo'], ouvrier: ['incident', 'photo'] };
+const PHOTO_LIMIT = 1500000;
+const MONEY_KINDS = ['expense', 'teamPayment'];
+const seesMoney = (user) => ['direction', 'gestionnaire'].includes(user.role);
+const shortText = (value, max, label) => {
+  const text = String(value ?? '').trim();
+  if (text.length > max) fail(400, label + ' trop long.');
+  return text;
+};
+const validAmount = (value) => {
+  const n = Number(value);
+  if (!Number.isSafeInteger(n) || n <= 0) fail(400, 'Le montant doit être un entier positif en FCFA.');
+  return n;
+};
+const validDate = (value) => {
+  const text = String(value || '').slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : new Date().toISOString().slice(0, 10);
+};
+const publicEntry = (row) => ({
+  id: row.id, kind: row.kind, projectId: row.project_id, userName: row.user_name, data: JSON.parse(row.data), status: row.status,
+  accountId: row.account_id || '', reason: row.reason || '', createdAt: row.created_at, decidedAt: row.decided_at || '', appliedAt: row.applied_at || '', applyError: row.apply_error || '', hasPhoto: !!row.has_photo,
+});
+const ENTRY_COLUMNS = 'id,kind,project_id,user_name,data,status,account_id,reason,created_at,decided_at,applied_at,apply_error,photo IS NOT NULL AS has_photo';
+async function visibleProjects(env, user) {
+  const current = await readWorkspace(env);
+  if (!current) return { current: null, ids: new Set() };
+  return { current, ids: new Set(viewFor(current.data, user).projects.map((p) => p.id)) };
+}
+const entryAllowed = (entry, user, ids) => (seesMoney(user) ? true : !MONEY_KINDS.includes(entry.kind) && ids.has(entry.project_id));
+async function reservedOnTask(env, taskId, state) {
+  const { results } = await env.DB.prepare("SELECT id,data FROM entries WHERE kind='teamPayment' AND (status='pending' OR (status='approved' AND applied_at IS NULL))").all();
+  return results.reduce((n, row) => { const d = JSON.parse(row.data); return d.taskId === taskId && !state.teamPayments.some((p) => p.id === row.id) ? n + Number(d.amount || 0) : n; }, 0);
+}
+async function createEntry(request, env) {
+  const user = await requireUser(request, env);
+  const body = await readJson(request);
+  if (!(ENTRY_KINDS[user.role] || []).includes(body.kind)) fail(403, 'Votre compte ne peut pas faire cette saisie.');
+  const { current, ids } = await visibleProjects(env, user);
+  if (!current) fail(409, 'Les données de l’entreprise ne sont pas encore disponibles.');
+  if (typeof body.projectId !== 'string' || !ids.has(body.projectId)) fail(403, 'Chantier non autorisé.');
+  const id = typeof body.id === 'string' && /^[\w-]{8,64}$/.test(body.id) ? body.id : crypto.randomUUID();
+  const date = validDate(body.date);
+  let data;
+  if (body.kind === 'expense') {
+    const description = shortText(body.description, 300, 'Désignation');
+    if (!description) fail(400, 'Désignation obligatoire.');
+    data = { description, amount: validAmount(body.amount), category: shortText(body.category, 60, 'Catégorie') || 'Autres', method: shortText(body.method, 40, 'Mode'), date };
+  } else if (body.kind === 'teamPayment') {
+    const task = current.data.tasks.find((t) => t.id === body.taskId && t.projectId === body.projectId);
+    if (!task) fail(400, 'Choisissez une tâche de ce chantier.');
+    const amount = validAmount(body.amount);
+    const paid = current.data.teamPayments.filter((p) => !p.void && p.taskId === task.id).reduce((n, p) => n + Number(p.amount || 0), 0);
+    if (amount > Number(task.agreedAmount) - paid - await reservedOnTask(env, task.id, current.data)) fail(400, 'Le paiement dépasse le reste à payer de cette tâche.');
+    data = { taskId: task.id, description: shortText(task.description, 300, 'Tâche'), amount, method: shortText(body.method, 40, 'Mode'), date };
+  } else if (body.kind === 'incident') {
+    const note = shortText(body.note, 2000, 'Description');
+    if (!note) fail(400, 'Décrivez le problème.');
+    data = { note, type: shortText(body.type, 60, 'Type') || 'Problème', date };
+  } else {
+    data = { note: shortText(body.note, 500, 'Note'), date };
+  }
+  let photo = null;
+  if (body.photo !== undefined && body.photo !== null && body.photo !== '') {
+    if (typeof body.photo !== 'string' || !/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(body.photo)) fail(400, 'Photo invalide.');
+    if (body.photo.length > PHOTO_LIMIT) fail(413, 'Photo trop volumineuse.');
+    photo = body.photo;
+  }
+  if (body.kind === 'photo' && !photo) fail(400, 'Ajoutez une photo.');
+  const status = MONEY_KINDS.includes(body.kind) ? 'pending' : body.kind === 'incident' ? 'open' : 'info';
+  const saved = await env.DB.prepare('INSERT OR IGNORE INTO entries(id,kind,project_id,user_id,user_name,data,photo,status,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
+    .bind(id, body.kind, body.projectId, user.id, user.name, JSON.stringify(data), photo, status, new Date().toISOString()).run();
+  if (saved.meta.changes !== 1) {
+    const existing = await env.DB.prepare('SELECT user_id FROM entries WHERE id=?').bind(id).first();
+    if (existing?.user_id !== user.id) fail(409, 'Identifiant déjà utilisé.');
+  }
+  const row = await env.DB.prepare(`SELECT ${ENTRY_COLUMNS} FROM entries WHERE id=?`).bind(id).first();
+  return reply({ entry: publicEntry(row) }, 201);
+}
+async function listEntries(request, env) {
+  const user = await requireUser(request, env);
+  const { ids } = await visibleProjects(env, user);
+  // Ce qui reste à traiter est toujours renvoyé, même au-delà des 1000 dernières saisies.
+  const { results } = await env.DB.prepare(`SELECT ${ENTRY_COLUMNS} FROM entries WHERE status IN ('pending','open') OR (status='approved' AND applied_at IS NULL) OR id IN (SELECT id FROM entries ORDER BY created_at DESC LIMIT 1000) ORDER BY created_at DESC`).all();
+  return reply({ entries: results.filter((row) => entryAllowed(row, user, ids)).map(publicEntry) });
+}
+async function entryPhoto(request, env, id) {
+  const user = await requireUser(request, env);
+  const row = await env.DB.prepare('SELECT kind,project_id,photo FROM entries WHERE id=?').bind(id).first();
+  const { ids } = await visibleProjects(env, user);
+  if (!row || !entryAllowed(row, user, ids) || !row.photo) fail(404, 'Photo introuvable.');
+  return reply({ photo: row.photo });
+}
+async function decideEntry(request, env, id) {
+  await requireManager(request, env);
+  const body = await readJson(request);
+  const row = await env.DB.prepare('SELECT kind,status FROM entries WHERE id=?').bind(id).first();
+  if (!row) fail(404, 'Saisie introuvable.');
+  const now = new Date().toISOString();
+  let result;
+  if (body.decision === 'approve') {
+    if (!MONEY_KINDS.includes(row.kind)) fail(400, 'Cette saisie ne se valide pas.');
+    const current = await readWorkspace(env);
+    if (!current?.data.accounts.some((a) => a.id === body.accountId)) fail(400, 'Choisissez la caisse à utiliser.');
+    result = await env.DB.prepare("UPDATE entries SET status='approved',account_id=?,decided_at=? WHERE id=? AND status='pending'").bind(body.accountId, now, id).run();
+  } else if (body.decision === 'reject') {
+    const reason = shortText(body.reason, 500, 'Motif');
+    if (!reason) fail(400, 'Indiquez le motif du refus.');
+    result = await env.DB.prepare("UPDATE entries SET status='rejected',reason=?,decided_at=? WHERE id=? AND status='pending'").bind(reason, now, id).run();
+  } else if (body.decision === 'resolve') {
+    result = await env.DB.prepare("UPDATE entries SET status='resolved',reason=?,decided_at=? WHERE id=? AND status='open'").bind(shortText(body.reason, 500, 'Note'), now, id).run();
+  } else if (body.decision === 'retry') {
+    result = await env.DB.prepare("UPDATE entries SET apply_error=NULL WHERE id=? AND status='approved' AND applied_at IS NULL AND apply_error IS NOT NULL").bind(id).run();
+  } else if (body.decision === 'cancel') {
+    const reason = shortText(body.reason, 500, 'Motif');
+    if (!reason) fail(400, 'Indiquez le motif.');
+    result = await env.DB.prepare("UPDATE entries SET status='rejected',reason=?,apply_error=NULL,decided_at=? WHERE id=? AND status='approved' AND applied_at IS NULL AND apply_error IS NOT NULL").bind(reason, now, id).run();
+  } else fail(400, 'Décision invalide.');
+  if (result.meta.changes !== 1) fail(409, 'Cette saisie a déjà été traitée.');
+  const updated = await env.DB.prepare(`SELECT ${ENTRY_COLUMNS} FROM entries WHERE id=?`).bind(id).first();
+  return reply({ entry: publicEntry(updated) });
+}
+async function entriesToApply(request, env) {
+  await requireManager(request, env);
+  const { results } = await env.DB.prepare(`SELECT ${ENTRY_COLUMNS} FROM entries WHERE status='approved' AND applied_at IS NULL AND apply_error IS NULL ORDER BY created_at`).all();
+  return reply({ entries: results.map(publicEntry) });
+}
+async function markApplied(request, env, id) {
+  await requireManager(request, env);
+  const body = await readJson(request);
+  const error = body.error ? shortText(body.error, 300, 'Erreur') : null;
+  const result = await env.DB.prepare(error
+    ? "UPDATE entries SET apply_error=? WHERE id=? AND status='approved' AND applied_at IS NULL"
+    : "UPDATE entries SET applied_at=? WHERE id=? AND status='approved' AND applied_at IS NULL").bind(error || new Date().toISOString(), id).run();
+  if (result.meta.changes !== 1) fail(409, 'Saisie déjà traitée.');
+  return reply({ ok: true });
+}
+
 export async function handleTeam(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
@@ -363,6 +501,13 @@ export async function handleTeam(request, env) {
     if (method === 'POST' && path === '/api/actions') return await action(request, env);
     if (method === 'GET' && path === '/api/users') return await listUsers(request, env);
     if (method === 'POST' && path === '/api/users') return await createUser(request, env);
+    if (method === 'POST' && path === '/api/entries') return await createEntry(request, env);
+    if (method === 'GET' && path === '/api/entries') return await listEntries(request, env);
+    if (method === 'GET' && path === '/api/entries/to-apply') return await entriesToApply(request, env);
+    const entry = path.match(/^\/api\/entries\/([\w-]{1,64})\/(photo|decision|applied)$/);
+    if (entry && method === 'GET' && entry[2] === 'photo') return await entryPhoto(request, env, entry[1]);
+    if (entry && method === 'POST' && entry[2] === 'decision') return await decideEntry(request, env, entry[1]);
+    if (entry && method === 'POST' && entry[2] === 'applied') return await markApplied(request, env, entry[1]);
     const member = path.match(/^\/api\/users\/([\w-]{1,100})(\/invite)?$/);
     if (member && method === 'PATCH' && !member[2]) return await updateUser(request, env, member[1]);
     if (member && method === 'POST' && member[2]) return await createInvite(request, env, member[1]);

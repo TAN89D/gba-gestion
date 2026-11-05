@@ -33,6 +33,25 @@
 .member-bar i{display:block;height:100%;background:#0066cc}
 .member-bar i.over{background:#c62828}
 .member-actions{margin-top:22px}
+.member-soon{cursor:pointer;background:#fff;border:1px solid #bfd8f5;color:#0a4f99;width:100%}
+.member-soon svg{color:#0066cc}
+.member-form{display:grid;gap:12px}
+.member-form label{display:block;font-weight:600}
+.member-form input:not(.file-input),.member-form select,.member-form textarea{display:block;width:100%;min-height:46px;margin-top:5px;padding:10px;border:1px solid #cfd8e6;border-radius:10px;font:inherit;font-weight:400;background:#fff}
+.member-photo-pick{display:flex!important;align-items:center;justify-content:center;gap:10px;min-height:64px;padding:12px;border:2px dashed #0066cc;border-radius:12px;color:#0066cc;text-align:center;cursor:pointer}
+.member-preview{width:100%;max-height:320px;object-fit:contain;border-radius:10px;background:#f3f6fa}
+.member-photos{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.member-photos figure{margin:0}
+.member-photos figcaption{font-size:12px;color:#5b6b82;margin-top:3px;overflow-wrap:anywhere}
+.member-photo{display:block;width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:10px;background:#e8edf4}
+.member-photo-wait{min-height:90px}
+.member-report{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;margin:12px 0}
+.member-tag-bad{background:#fdeaea;color:#c62828}
+.admin-queue{display:grid;gap:10px}
+.admin-entry{padding:14px 16px;border:1px solid #dde4ee;border-radius:12px;background:#fff}
+.admin-entry select{min-height:38px;padding:6px;border:1px solid #cfd8e6;border-radius:9px;background:#fff}
+.admin-entry .member-photo{max-width:320px;margin-top:8px}
+.admin-folder select{min-height:42px;width:100%;max-width:420px;padding:8px;margin-bottom:12px;border:1px solid #cfd8e6;border-radius:9px;background:#fff;font-size:15px}
 .member-pay{margin:8px 0}
 .member-pay-row{display:flex;justify-content:space-between;gap:12px;margin-top:6px;font-size:15px}
 .member-pay-row b{display:inline;font-size:15px}

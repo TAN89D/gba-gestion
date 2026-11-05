@@ -49,18 +49,19 @@ export function viewFor(state, user) {
   const projects = state.projects.filter((p) => assigned.has(p.id));
 
   if (user.role === 'gestionnaire') {
-    // Jamais le budget général ni le contrat : seulement le budget confié par la direction.
-    view.projects = projects.map((p) => pick(p, [...PROJECT_BASE, 'managerBudget']));
+    // Tous les chantiers, mais jamais le budget général ni le contrat : seulement le budget confié.
+    const anySite = (row) => !!row.projectId;
+    view.projects = state.projects.map((p) => pick(p, [...PROJECT_BASE, 'managerBudget']));
     view.employees = state.employees.map((x) => pick(x, FIELDS.employees));
     view.suppliers = state.suppliers.map((x) => pick(x, FIELDS.suppliers));
     view.materials = state.materials.map((x) => pick(x, FIELDS.materials));
-    view.expenses = live(state.expenses).filter(onSite).map((x) => pick(x, FIELDS.expenses));
-    view.tasks = state.tasks.filter(onSite).map((x) => pick(x, FIELDS.tasks));
-    view.teamPayments = live(state.teamPayments).filter(onSite).map((x) => pick(x, FIELDS.teamPayments));
-    view.stockMoves = state.stockMoves.filter(onSite).map((x) => pick(x, FIELDS.stockMoves));
-    view.orders = state.orders.filter(onSite).map((x) => pick(x, FIELDS.orders));
-    view.deliveries = state.deliveries.filter(onSite).map((x) => pick(x, FIELDS.deliveries));
-    view.journal = state.journal.filter(onSite).map((x) => pick(x, FIELDS.journal));
+    view.expenses = live(state.expenses).filter(anySite).map((x) => pick(x, FIELDS.expenses));
+    view.tasks = state.tasks.filter(anySite).map((x) => pick(x, FIELDS.tasks));
+    view.teamPayments = live(state.teamPayments).filter(anySite).map((x) => pick(x, FIELDS.teamPayments));
+    view.stockMoves = state.stockMoves.filter(anySite).map((x) => pick(x, FIELDS.stockMoves));
+    view.orders = state.orders.filter(anySite).map((x) => pick(x, FIELDS.orders));
+    view.deliveries = state.deliveries.filter(anySite).map((x) => pick(x, FIELDS.deliveries));
+    view.journal = state.journal.filter(anySite).map((x) => pick(x, FIELDS.journal));
     view.accounts = state.accounts.map((x) => pick(x, ['id', 'name']));
   } else if (user.role === 'chef') {
     // Suivi du terrain sur ses chantiers : tâches, équipe et journal, sans aucun montant.

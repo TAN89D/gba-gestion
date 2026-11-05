@@ -230,12 +230,12 @@ test('gestionnaire : le budget confié, jamais le budget général ni les devis'
   assert.equal(v.quotes.length, 0);
   for (const role of ['chef', 'ouvrier']) assert.equal(JSON.stringify(viewFor(s, { role, projectIds: ['p1'], employeeId: 'e1' })).includes('managerBudget'), false, role);
 });
-test('gestionnaire : seulement ses chantiers, jamais la caisse ni les marges', () => {
+test('gestionnaire : tous les chantiers, jamais la caisse, les contrats ni les factures', () => {
   const s = sample();
-  const v = viewFor(s, { role: 'gestionnaire', projectIds: ['p1'] });
+  const v = viewFor(s, { role: 'gestionnaire', projectIds: [] });
   const text = JSON.stringify(v);
-  for (const secret of SECRETS) assert.equal(text.includes(secret), false, secret);
-  assert.equal(v.projects.length, 1);
+  for (const secret of SECRETS.filter((x) => !['HORS-CHANTIER', 'NOTE-AUTRE'].includes(x))) assert.equal(text.includes(secret), false, secret);
+  assert.equal(v.projects.length, 2);
   assert.equal(v.expenses[0].amount, 222333);
   assert.equal(v.invoices.length + v.payments.length + v.clients.length + v.quotes.length + v.audit.length, 0);
   assert.deepEqual(v.accounts, [{ id: 'main', name: 'Caisse entreprise' }]);

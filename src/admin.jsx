@@ -3,11 +3,15 @@ import { api, inviteUrl, qrImage, MemberForm } from './team.jsx';
 import { ROLES } from './permissions.js';
 import { money, fmtDate } from './domain.js';
 import { overview, projectRows, invoiceRows, expenseRows, workerRows, activityRows } from './adminData.js';
+import { ENTRY_LABELS, STATUS_LABELS } from './entries.js';
+import { PhotoGrid, PhotoView, ReportButton, MyEntries } from './entries.jsx';
 import './admin.css';
 
 const TABS = [
   ['home', 'Vue d’ensemble'],
+  ['queue', 'À valider'],
   ['projects', 'Chantiers'],
+  ['folders', 'Dossiers'],
   ['invoices', 'Factures'],
   ['expenses', 'Dépenses'],
   ['workers', 'Paie de l’équipe'],
@@ -52,9 +56,11 @@ function Kpi({ label, value, tone }) {
 function Box({ title, empty, rows, render }) {
   return <section className="admin-box"><h3>{title}</h3>{rows.length ? rows.map(render) : <p className="admin-empty">{empty}</p>}</section>;
 }
-function Home({ data, users, go }) {
+function Home({ data, users, go, entries }) {
   const o = overview(data);
+  const toDo = entries.filter((e) => ['pending', 'open'].includes(e.status)).length;
   return <>
+    {toDo > 0 && <div className="admin-note"><b>{toDo} élément(s) de l’équipe à traiter.</b> <button className="admin-link" onClick={() => go('queue')}>Voir</button></div>}
     <div className="admin-kpis">
       <Kpi label="Disponible en caisse" value={money(o.cash)} tone={o.cash < 0 ? 'bad' : 'good'} />
       <Kpi label="Facturé" value={money(o.invoiced)} />
@@ -144,6 +150,68 @@ function Activity({ data }) {
     { label: 'Motif', render: (r) => r.reason || '—' },
   ]} />;
 }
+function EntryCard({ entry, data, reload }) {
+  const [accountId, setAccountId] = useState(data?.accounts?.[0]?.id || '');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [showPhoto, setShowPhoto] = useState(false);
+  const decide = async (decision, extra = {}) => {
+    setBusy(true); setError('');
+    try { await api(`/api/entries/${entry.id}/decision`, { method: 'POST', body: { decision, ...extra } }); await reload(); } catch (x) { setError(x.message); setBusy(false); }
+  };
+  const site = data?.projects?.find((p) => p.id === entry.projectId)?.name || 'Chantier inconnu';
+  return <div className="admin-entry">
+    <div className="admin-user-head"><b>{entry.data.description || entry.data.note || ENTRY_LABELS[entry.kind]}</b><span className="admin-tag">{ENTRY_LABELS[entry.kind]}</span><span className={'admin-tag' + (entry.status === 'rejected' ? ' bad' : '')}>{STATUS_LABELS[entry.status]}</span></div>
+    <small>{site} · {fmtDate(entry.data.date)} · {entry.userName}{entry.data.method ? ' · ' + entry.data.method : ''}</small>
+    {entry.data.amount && <div className="admin-line"><span>Montant</span><b>{money(entry.data.amount)}</b></div>}
+    {entry.applyError && <p className="error" role="alert">Non enregistré sur le téléphone : {entry.applyError}</p>}
+    {entry.hasPhoto && (showPhoto ? <PhotoView id={entry.id} alt="Pièce jointe" /> : <div className="admin-actions"><button onClick={() => setShowPhoto(true)}>Voir la photo</button></div>)}
+    {entry.status === 'pending' && <div className="admin-actions">
+      <select aria-label="Caisse à utiliser" value={accountId} onChange={(e) => setAccountId(e.target.value)}>{(data?.accounts || []).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select>
+      <button className="primary" disabled={busy || !accountId} onClick={() => decide('approve', { accountId })}>Valider</button>
+      <button className="danger" disabled={busy} onClick={() => { const reason = prompt('Motif du refus'); if (reason?.trim()) decide('reject', { reason }); }}>Refuser</button>
+    </div>}
+    {entry.applyError && <div className="admin-actions"><button disabled={busy} onClick={() => decide('retry')}>Réessayer</button><button className="danger" disabled={busy} onClick={() => { const reason = prompt('Motif de l’abandon'); if (reason?.trim()) decide('cancel', { reason }); }}>Abandonner cette saisie</button></div>}
+    {entry.status === 'open' && <div className="admin-actions"><button disabled={busy} onClick={() => decide('resolve')}>Marquer comme résolu</button></div>}
+    {error && <p className="error" role="alert">{error}</p>}
+  </div>;
+}
+function Queue({ entries, data, reload }) {
+  const money = entries.filter((e) => e.status === 'pending');
+  const open = entries.filter((e) => e.status === 'open');
+  const stuck = entries.filter((e) => e.status === 'approved' && e.applyError);
+  const waiting = entries.filter((e) => e.status === 'approved' && !e.appliedAt && !e.applyError);
+  return <>
+    {!!waiting.length && <p className="admin-note">{waiting.length} saisie(s) validée(s) attendent l’ouverture de l’application sur votre téléphone pour être enregistrées dans vos comptes.</p>}
+    <h2>Dépenses et paiements à valider ({money.length})</h2>
+    <div className="admin-queue">{money.length ? money.map((e) => <EntryCard key={e.id} entry={e} data={data} reload={reload} />) : <p className="admin-empty">Rien à valider.</p>}</div>
+    <h2>Incidents à traiter ({open.length})</h2>
+    <div className="admin-queue">{open.length ? open.map((e) => <EntryCard key={e.id} entry={e} data={data} reload={reload} />) : <p className="admin-empty">Aucun incident ouvert.</p>}</div>
+    {!!stuck.length && <><h2>À vérifier ({stuck.length})</h2><div className="admin-queue">{stuck.map((e) => <EntryCard key={e.id} entry={e} data={data} reload={reload} />)}</div></>}
+  </>;
+}
+function Folders({ data, entries }) {
+  const [id, setId] = useState(data.projects[0]?.id || '');
+  const rows = projectRows(data);
+  const row = rows.find((r) => r.id === id);
+  const project = data.projects.find((p) => p.id === id);
+  if (!project) return <p className="admin-empty">Aucun chantier pour le moment.</p>;
+  const site = entries.filter((e) => e.projectId === id);
+  return <div className="admin-folder">
+    <label>Chantier <select value={id} onChange={(e) => setId(e.target.value)}>{data.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+    <div className="admin-kpis">
+      <Kpi label="Contrat" value={money(row.contract)} />
+      <Kpi label="Encaissé" value={money(row.received)} tone="good" />
+      <Kpi label="Coût engagé" value={money(row.forecast)} />
+      <Kpi label="Confié au gestionnaire" value={row.managerBudget ? money(row.managerBudget) : '—'} />
+      <Kpi label="Marge estimée" value={money(row.margin)} tone={row.margin < 0 ? 'bad' : ''} />
+    </div>
+    <ReportButton company={data.settings?.company} project={project} data={data} entries={entries} finance={{ contract: row.contract, received: row.received, toCollect: row.toCollect, margin: row.margin }} />
+    <PhotoGrid key={id} entries={site} />
+    <MyEntries entries={site} title="Saisies et incidents" />
+    {!site.length && <p className="admin-empty">Aucune photo ni saisie de l’équipe sur ce chantier.</p>}
+  </div>;
+}
 function EditMember({ user, data, isSelf, onClose, onSaved }) {
   const [form, setForm] = useState({ name: user.name, role: user.role, email: user.email, employeeId: user.employeeId, projectIds: user.projectIds });
   const [error, setError] = useState('');
@@ -158,7 +226,7 @@ function EditMember({ user, data, isSelf, onClose, onSaved }) {
       <label>Rôle<select value={form.role} disabled={isSelf} onChange={(e) => set('role', e.target.value)}>{Object.entries(ROLES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label>
       <label>Adresse Gmail<input type="email" value={form.email} onChange={(e) => set('email', e.target.value)} /></label>
       {form.role === 'ouvrier' && <label>Fiche dans l’équipe<select value={form.employeeId} onChange={(e) => set('employeeId', e.target.value)}><option value="">Choisir…</option>{(data?.employees || []).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select></label>}
-      {form.role !== 'direction' && <div className="admin-sites"><b>Chantiers autorisés</b>{(data?.projects || []).map((p) => <label key={p.id}><input type="checkbox" checked={form.projectIds.includes(p.id)} onChange={() => toggle(p.id)} />{p.name}</label>)}</div>}
+      {['chef', 'ouvrier'].includes(form.role) && <div className="admin-sites"><b>Chantiers autorisés</b>{(data?.projects || []).map((p) => <label key={p.id}><input type="checkbox" checked={form.projectIds.includes(p.id)} onChange={() => toggle(p.id)} />{p.name}</label>)}</div>}
     </div>
     {error && <p className="error" role="alert">{error}</p>}
     <div className="admin-actions"><button className="primary" type="submit">Enregistrer</button><button type="button" onClick={onClose}>Annuler</button></div>
@@ -179,7 +247,7 @@ function Access({ users, data, me, reload }) {
     {error && <p className="error" role="alert">{error}</p>}
     {users.map((u) => <div key={u.id} className={'admin-user' + (u.active ? '' : ' off')}>
       <div className="admin-user-head"><b>{u.name}</b><span className="admin-tag">{ROLES[u.role]}</span>{!u.active && <span className="admin-tag bad">Accès coupé</span>}{u.id === me.id && <span className="admin-tag good">Vous</span>}</div>
-      <small>{[u.email, u.role === 'direction' ? 'Tous les chantiers' : (siteNames(u).join(', ') || 'Aucun chantier'), `${u.devices} appareil(s) · ${u.sessions} connexion(s) active(s)`].filter(Boolean).join(' · ')}</small>
+      <small>{[u.email, ['direction', 'gestionnaire'].includes(u.role) ? 'Tous les chantiers' : (siteNames(u).join(', ') || 'Aucun chantier'), `${u.devices} appareil(s) · ${u.sessions} connexion(s) active(s)`].filter(Boolean).join(' · ')}</small>
       {editing === u.id
         ? <EditMember user={u} data={data} isSelf={u.id === me.id} onClose={() => setEditing(null)} onSaved={async () => { setEditing(null); await reload(); }} />
         : <div className="admin-actions">
@@ -197,6 +265,7 @@ export function AdminApp() {
   const [me, setMe] = useState(null);
   const [users, setUsers] = useState([]);
   const [ws, setWs] = useState(null);
+  const [entries, setEntries] = useState([]);
   const [tab, setTab] = useState('home');
   const [error, setError] = useState('');
   const load = async () => {
@@ -205,8 +274,8 @@ export function AdminApp() {
       const who = await api('/api/me');
       setMe(who.user);
       if (who.user.role !== 'direction') { setState('forbidden'); return; }
-      const [list, workspace] = await Promise.all([api('/api/users'), api('/api/workspace')]);
-      setUsers(list.users); setWs(workspace); setState('ready');
+      const [list, workspace, saisies] = await Promise.all([api('/api/users'), api('/api/workspace'), api('/api/entries')]);
+      setUsers(list.users); setWs(workspace); setEntries(saisies.entries); setState('ready');
     } catch (x) {
       if (x.status === 401) { setState('login'); return; }
       setError(x.message); setState('error');
@@ -219,13 +288,14 @@ export function AdminApp() {
   if (state === 'forbidden') return <Login onDone={load} forbidden />;
   if (state === 'error') return <Login onDone={load} error={error} />;
   const data = ws?.data;
+  const pendingCount = entries.filter((e) => ['pending', 'open'].includes(e.status)).length;
   const Page = { projects: Projects, invoices: Invoices, expenses: Expenses, workers: Workers, activity: Activity }[tab];
   return <div className="admin">
     <header className="admin-top"><img src="/logo.jpg" alt="GBA" /><div className="admin-grow"><h1>Tableau de bord général</h1><small>{data?.settings?.company || 'GBA Gestion'} · {me.name}</small></div><button onClick={load}>Actualiser</button><button onClick={logout}>Se déconnecter</button></header>
-    <nav className="admin-tabs" aria-label="Sections">{TABS.map(([k, label]) => <button key={k} className={tab === k ? 'on' : ''} aria-current={tab === k ? 'page' : undefined} onClick={() => setTab(k)}>{label}</button>)}</nav>
+    <nav className="admin-tabs" aria-label="Sections">{TABS.map(([k, label]) => <button key={k} className={tab === k ? 'on' : ''} aria-current={tab === k ? 'page' : undefined} onClick={() => setTab(k)}>{label}{k === 'queue' && pendingCount > 0 ? ` (${pendingCount})` : ''}</button>)}</nav>
     <main className="admin-main">
       {tab !== 'access' && <p className="admin-note">{data ? <>Données reçues de votre téléphone. Dernière mise à jour : {dateTime(ws.updatedAt)}. Les saisies se font pour l’instant dans l’application.</> : 'Aucune donnée pour le moment : lancez le transfert depuis votre téléphone.'}</p>}
-      {tab === 'access' ? <Access users={users} data={data} me={me} reload={load} /> : !data ? null : tab === 'home' ? <Home data={data} users={users} go={setTab} /> : <Page data={data} />}
+      {tab === 'access' ? <Access users={users} data={data} me={me} reload={load} /> : !data ? null : tab === 'home' ? <Home data={data} users={users} go={setTab} entries={entries} /> : tab === 'queue' ? <Queue entries={entries} data={data} reload={load} /> : tab === 'folders' ? <Folders data={data} entries={entries} /> : <Page data={data} />}
     </main>
   </div>;
 }
