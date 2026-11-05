@@ -11,7 +11,7 @@ const MEMBER_KEY = 'gba-member';
 const OWNER_DATA_KEY = 'gba-web-v3';
 const LOGOUT_PENDING_KEY = 'gba-logout-pending';
 
-async function api(path, { method = 'GET', body, headers = {} } = {}) {
+export async function api(path, { method = 'GET', body, headers = {} } = {}) {
   let res;
   try {
     res = await fetch(path, {
@@ -344,10 +344,10 @@ function TransferPanel({ getState, backupNow, engine, syncStatus, onDone }) {
   );
 }
 
-function inviteUrl(token) { return location.origin + '/#invite=' + token; }
-function qrImage(text) { const q = qrcode(0, 'M'); q.addData(text); q.make(); return q.createDataURL(6, 8); }
+export function inviteUrl(token) { return location.origin + '/#invite=' + token; }
+export function qrImage(text) { const q = qrcode(0, 'M'); q.addData(text); q.make(); return q.createDataURL(6, 8); }
 
-function MemberForm({ workspace, onSaved }) {
+export function MemberForm({ workspace, onSaved }) {
   const blank = { name: '', role: 'ouvrier', email: '', employeeId: '', projectIds: [] };
   const [form, setForm] = useState(blank);
   const [error, setError] = useState('');
@@ -410,6 +410,7 @@ export function TeamAdmin({ getState, backupNow, engine, syncStatus }) {
       {status === 'forbidden' && <p className="subtle">Accès réservé à la direction.</p>}
       {status === 'key' && <form onSubmit={openWithKey}><p className="subtle">Saisissez la clé privée Cloudflare pour ouvrir la gestion de l’équipe. Elle n’est pas conservée.</p><label>Clé privée<input type="password" autoComplete="off" value={key} onChange={(e) => setKey(e.target.value)} /></label>{error && <p className="error" role="alert">{error}</p>}<button className="secondary wide" type="submit" disabled={!key}>Ouvrir la gestion de l’équipe</button></form>}
       {status === 'ready' && <>
+        <a className="secondary wide" href="/admin">Ouvrir le tableau de bord général</a>
         <TransferPanel getState={getState} backupNow={backupNow} engine={engine} syncStatus={syncStatus} onDone={load} />
         {users.map((u) => <div key={u.id} className={'team-member' + (u.active ? '' : ' off')}><b>{u.name}</b><br /><small>{ROLES[u.role]}{u.email ? ' · ' + u.email : ''}{u.role !== 'direction' ? ' · ' + u.projectIds.length + ' chantier(s)' : ''}{u.active ? '' : ' · Désactivé'}</small><div className="chips">{u.active && u.role !== 'direction' && <button onClick={() => makeInvite(u)}><QrCode /> Inviter</button>}{u.role !== 'direction' && (u.active ? <button className="danger" onClick={() => setActive(u, false)}>Couper l’accès</button> : <button onClick={() => setActive(u, true)}>Réactiver</button>)}</div></div>)}
         {invite && <div className="qr-box"><b>Invitation de {invite.name}</b><p>À scanner une seule fois avec son téléphone. Valable 7 jours.</p><img src={qrImage(invite.url)} alt={'QR code d’invitation de ' + invite.name} /><code>{invite.url}</code><div className="chips"><button onClick={() => navigator.clipboard?.writeText(invite.url)}>Copier le lien</button><button onClick={() => setInvite(null)}>Masquer</button></div></div>}
@@ -423,6 +424,7 @@ export function TeamAdmin({ getState, backupNow, engine, syncStatus }) {
 // Choisit l'écran d'ouverture. L'application de la direction reste celle par défaut.
 export function firstScreen() {
   const hash = location.hash || '';
+  if (location.pathname === '/admin' || location.pathname === '/admin/') return { screen: 'admin' };
   const clean = () => history.replaceState(null, '', location.pathname);
   if (hash.startsWith('#invite=')) { const token = decodeURIComponent(hash.slice(8)); clean(); return { screen: 'join', token }; }
   if (hash.startsWith('#connexion-refusee=')) { const reason = hash.slice(19); clean(); return { screen: 'member', reason }; }

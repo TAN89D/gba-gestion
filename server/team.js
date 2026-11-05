@@ -284,8 +284,13 @@ async function action(request, env) {
 }
 async function listUsers(request, env) {
   await requireManager(request, env);
-  const { results } = await env.DB.prepare('SELECT * FROM users ORDER BY created_at').all();
-  return reply({ users: results.map(publicUser) });
+  const { results } = await env.DB.prepare(
+    `SELECT u.*,
+       (SELECT COUNT(*) FROM devices d WHERE d.user_id=u.id AND d.revoked=0) AS device_count,
+       (SELECT COUNT(*) FROM sessions s WHERE s.user_id=u.id AND s.expires_at>?) AS session_count
+     FROM users u ORDER BY u.created_at`,
+  ).bind(nowSeconds()).all();
+  return reply({ users: results.map((row) => ({ ...publicUser(row), devices: Number(row.device_count), sessions: Number(row.session_count) })) });
 }
 async function createUser(request, env) {
   await requireManager(request, env);
@@ -302,12 +307,13 @@ async function createUser(request, env) {
   return reply({ user: publicUser(row) }, 201);
 }
 async function updateUser(request, env, id) {
-  await requireManager(request, env);
+  const requester = await requireManager(request, env);
   const row = await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(id).first();
   if (!row) fail(404, 'Compte introuvable.');
   const body = await readJson(request);
   const member = cleanMember(body, publicUser(row));
   const active = body.active === undefined ? !!row.active : body.active === true;
+  if (requester.id === id && (member.role !== row.role || !active)) fail(409, 'Vous ne pouvez pas retirer votre propre accès de direction.');
   const losesDirection = row.role === 'direction' && row.active && (member.role !== 'direction' || !active);
   if (losesDirection && await directionCount(env) <= 1) fail(409, 'Gardez au moins un compte de direction actif.');
   try {
@@ -350,6 +356,7 @@ export async function handleTeam(request, env) {
     if (method === 'GET' && path === '/api/auth/google/start') return googleStart(env, url);
     if (method === 'GET' && path === '/api/auth/google/callback') return await googleCallback(request, env, url);
     if (method === 'POST' && path === '/api/auth/logout') return await logout(request, env, url);
+    if (method === 'GET' && path === '/api/config') return reply({ google: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) });
     if (method === 'GET' && path === '/api/me') return reply({ user: await requireUser(request, env) });
     if (method === 'GET' && path === '/api/workspace') return await workspace(request, env);
     if (method === 'PUT' && path === '/api/workspace') return await importWorkspace(request, env);
