@@ -41,6 +41,8 @@ export function counts(state) {
 }
 // Une base sans client, chantier ni facture ne doit jamais remplacer une base en ligne.
 export const looksEmpty = (state) => !state?.clients?.length && !state?.projects?.length && !state?.invoices?.length;
+// Des données de démonstration ne doivent jamais partir vers la base commune.
+export const isDemo = (state) => state?.demo === true;
 
 async function send(body) {
   return fetch('/api/workspace', { method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body });
@@ -61,6 +63,7 @@ export async function transferAll(getState, { overwriteRevision } = {}) {
   if (remote.data && overwriteRevision !== remote.revision && cfg.revision !== remote.revision) {
     return { needsConfirm: true, remoteRevision: remote.revision, remoteCounts: counts(remote.data), remoteUpdatedAt: remote.updatedAt };
   }
+  if (isDemo(state)) throw failure('Cet appareil contient des données de démonstration : elles ne sont jamais envoyées. Quittez la démonstration d’abord.');
   if (looksEmpty(state) && remote.data && !looksEmpty(remote.data)) throw failure('Cet appareil est vide : le transfert remplacerait les données en ligne. Transfert annulé.');
   const payload = buildPayload(state, remote.revision || 0);
   if (payload.tooBig) throw failure('Les données sont trop volumineuses pour être transférées, même sans les pièces jointes.');
@@ -93,6 +96,7 @@ export function createSyncEngine({ getState, canRun = () => true, onStatus = () 
     if (running) { again = true; return 'busy'; }
     const state = getState();
     if (cfg.syncedAt && cfg.syncedAt === state.updatedAt) { onStatus('ok', cfg); return 'ok'; }
+    if (isDemo(state)) { onStatus('demo', cfg); return 'demo'; }
     if (looksEmpty(state)) { onStatus('empty', cfg); return 'empty'; }
     const payload = buildPayload(state, cfg.revision);
     if (payload.tooBig) { onStatus('tooBig', cfg); return 'tooBig'; }

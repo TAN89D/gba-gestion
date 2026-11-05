@@ -251,6 +251,7 @@ async function importWorkspace(request, env) {
   await requireManager(request, env);
   const { revision, data, attachmentsOmitted } = await readJson(request);
   if (!Number.isInteger(revision) || revision < 0) fail(400, 'Révision invalide.');
+  if (data?.demo === true) fail(400, 'Les données de démonstration ne peuvent pas remplacer la base commune.');
   try { validate(data); } catch (e) { fail(400, e.message || 'Données invalides.'); }
   const previous = attachmentsOmitted === true ? await env.DB.prepare('SELECT payload FROM workspace WHERE id=1 AND revision=?').bind(revision).first() : null;
   const payload = JSON.stringify(previous ? keepAttachments(data, previous.payload) : data);
@@ -354,8 +355,11 @@ const validAmount = (value) => {
   return n;
 };
 const validDate = (value) => {
-  const text = String(value || '').slice(0, 10);
-  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : new Date().toISOString().slice(0, 10);
+  if (value === undefined || value === null || value === '') return new Date().toISOString().slice(0, 10);
+  const text = String(value);
+  const day = new Date(text + 'T00:00:00Z');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text) || Number.isNaN(day.getTime()) || day.toISOString().slice(0, 10) !== text) fail(400, 'Date invalide.');
+  return text;
 };
 const publicEntry = (row) => ({
   id: row.id, kind: row.kind, projectId: row.project_id, userName: row.user_name, data: JSON.parse(row.data), status: row.status,
@@ -375,6 +379,14 @@ async function reservedOnTask(env, taskId, state) {
 async function createEntry(request, env) {
   const user = await requireUser(request, env);
   const body = await readJson(request);
+  // Un renvoi (réponse perdue) retourne la saisie déjà enregistrée, avant tout autre contrôle.
+  if (typeof body.id === 'string' && /^[\w-]{8,64}$/.test(body.id)) {
+    const known = await env.DB.prepare(`SELECT user_id,${ENTRY_COLUMNS} FROM entries WHERE id=?`).bind(body.id).first();
+    if (known) {
+      if (known.user_id !== user.id) fail(409, 'Identifiant déjà utilisé.');
+      return reply({ entry: publicEntry(known) }, 200);
+    }
+  }
   if (!(ENTRY_KINDS[user.role] || []).includes(body.kind)) fail(403, 'Votre compte ne peut pas faire cette saisie.');
   const { current, ids } = await visibleProjects(env, user);
   if (!current) fail(409, 'Les données de l’entreprise ne sont pas encore disponibles.');
@@ -392,7 +404,7 @@ async function createEntry(request, env) {
     const amount = validAmount(body.amount);
     const paid = current.data.teamPayments.filter((p) => !p.void && p.taskId === task.id).reduce((n, p) => n + Number(p.amount || 0), 0);
     if (amount > Number(task.agreedAmount) - paid - await reservedOnTask(env, task.id, current.data)) fail(400, 'Le paiement dépasse le reste à payer de cette tâche.');
-    data = { taskId: task.id, description: shortText(task.description, 300, 'Tâche'), amount, method: shortText(body.method, 40, 'Mode'), date };
+    data = { taskId: task.id, employeeId: task.employeeId, description: shortText(task.description, 300, 'Tâche'), amount, method: shortText(body.method, 40, 'Mode'), date };
   } else if (body.kind === 'incident') {
     const note = shortText(body.note, 2000, 'Description');
     if (!note) fail(400, 'Décrivez le problème.');
@@ -434,7 +446,7 @@ async function entryPhoto(request, env, id) {
 async function decideEntry(request, env, id) {
   await requireManager(request, env);
   const body = await readJson(request);
-  const row = await env.DB.prepare('SELECT kind,status FROM entries WHERE id=?').bind(id).first();
+  const row = await env.DB.prepare('SELECT kind,status,project_id,data FROM entries WHERE id=?').bind(id).first();
   if (!row) fail(404, 'Saisie introuvable.');
   const now = new Date().toISOString();
   let result;
@@ -442,6 +454,15 @@ async function decideEntry(request, env, id) {
     if (!MONEY_KINDS.includes(row.kind)) fail(400, 'Cette saisie ne se valide pas.');
     const current = await readWorkspace(env);
     if (!current?.data.accounts.some((a) => a.id === body.accountId)) fail(400, 'Choisissez la caisse à utiliser.');
+    if (row.kind === 'teamPayment') {
+      const d = JSON.parse(row.data);
+      const task = current.data.tasks.find((t) => t.id === d.taskId);
+      if (!task || task.projectId !== row.project_id || (d.employeeId && task.employeeId !== d.employeeId)) fail(409, 'La tâche a changé de chantier ou d’ouvrier depuis la saisie. Refusez-la et demandez une nouvelle saisie.');
+      // Une saisie ancienne ne connaissait pas l'ouvrier : on fige celui que la direction valide.
+      if (!d.employeeId) {
+        await env.DB.prepare("UPDATE entries SET data=? WHERE id=? AND status='pending'").bind(JSON.stringify({ ...d, employeeId: task.employeeId }), id).run();
+      }
+    }
     result = await env.DB.prepare("UPDATE entries SET status='approved',account_id=?,decided_at=? WHERE id=? AND status='pending'").bind(body.accountId, now, id).run();
   } else if (body.decision === 'reject') {
     const reason = shortText(body.reason, 500, 'Motif');

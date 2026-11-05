@@ -30,6 +30,10 @@ export async function pullApproved({ getState, commit, flush = async () => true,
     if (find(state, TARGET[entry.kind], entry.id)) { ready.push(entry.id); continue; }
     let next;
     try {
+      if (entry.kind === 'teamPayment') {
+        const task = find(state, 'tasks', entry.data.taskId);
+        if (!task || task.projectId !== entry.projectId || !entry.data.employeeId || task.employeeId !== entry.data.employeeId) throw Error('La tâche a changé de chantier ou d’ouvrier depuis la saisie.');
+      }
       next = apply(state, entryToAction(entry));
     } catch (e) {
       await mark(entry.id, { error: e.message || 'Enregistrement impossible.' });

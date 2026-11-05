@@ -156,7 +156,13 @@ export function MemberApp({ reason }) {
     }
     try {
       const me = await api('/api/me');
-      if (me.user.role === 'direction' || hasOwnerData()) {
+      if (me.user.role === 'direction') {
+        // Un compte de direction invité ouvre le tableau de bord général, protégé par son code.
+        localStorage.removeItem(MEMBER_KEY);
+        location.replace('/admin');
+        return;
+      }
+      if (hasOwnerData()) {
         localStorage.removeItem(MEMBER_KEY);
         location.replace('/');
         return;
@@ -191,8 +197,8 @@ const TABS = {
   gestionnaire: [['home', 'Accueil', House], ['projects', 'Chantiers', HardHat], ['expenses', 'Dépenses', Receipt], ['team', 'Équipe', Users], ['orders', 'Achats', Package]],
   chef: [['home', 'Accueil', House], ['projects', 'Chantiers', HardHat], ['tasks', 'Tâches', ListChecks], ['crew', 'Équipe', Users], ['journal', 'Journal', Notebook]],
 };
-function Tile({ Icon, label, value, onClick }) {
-  return <button type="button" className="member-tile" onClick={onClick}><Icon size={28} /><b>{value}</b><small>{label}</small></button>;
+function Tile({ Icon, label, value, onClick, tone }) {
+  return <button type="button" className={'member-tile' + (tone ? ' member-tile-' + tone : '')} onClick={onClick}><Icon size={28} /><b>{value}</b><small>{label}</small></button>;
 }
 function Act({ Icon, label, onClick }) {
   return <button type="button" className="member-soon" onClick={onClick}><Icon size={30} /><span>{label}</span></button>;
@@ -249,7 +255,7 @@ function HomeTab({ user, data, go, openSite, doAction }) {
       <div className="member-tiles">
         <Tile Icon={Money} label="Budget confié" value={money(given)} onClick={() => go('projects')} />
         <Tile Icon={Receipt} label="Utilisé" value={money(usedTotal)} onClick={() => go('expenses')} />
-        <Tile Icon={Money} label="Reste du budget" value={money(given - usedTotal)} onClick={() => go('projects')} />
+        <Tile Icon={given - usedTotal < 0 ? Warning : Money} label={given - usedTotal < 0 ? 'Budget dépassé de' : 'Reste du budget'} value={money(Math.abs(given - usedTotal))} onClick={() => go('projects')} tone={given - usedTotal < 0 ? 'bad' : ''} />
         <Tile Icon={HardHat} label="Chantiers" value={data.projects.length} onClick={() => go('projects')} />
         <Tile Icon={Users} label="Reste à payer à l’équipe" value={money(Math.max(0, agreed - paid))} onClick={() => go('team')} />
         <Tile Icon={Package} label="Commandes en cours" value={data.orders.filter((o) => o.status !== 'Reçu').length} onClick={() => go('orders')} />
@@ -259,7 +265,7 @@ function HomeTab({ user, data, go, openSite, doAction }) {
         const used = usedOn(data, p.id);
         const budget = Number(p.managerBudget || 0);
         const pct = budget > 0 ? Math.round((used / budget) * 100) : 0;
-        return <button type="button" className="member-link" key={p.id} onClick={() => openSite(p.id)}><div className="member-card member-budget"><div><b>{p.name}</b><small>{budget > 0 ? money(used) + ' utilisés sur ' + money(budget) : money(used) + ' utilisés · aucun budget confié'}</small><div className="member-bar"><i style={{ width: Math.min(pct, 100) + '%' }} className={pct > 100 ? 'over' : ''} /></div></div></div></button>;
+        return <button type="button" className="member-link" key={p.id} onClick={() => openSite(p.id)}><div className="member-card member-budget"><div><b>{p.name}</b><small className={budget > 0 && used > budget ? 'member-over' : ''}>{budget > 0 ? money(used) + ' utilisés sur ' + money(budget) + (used > budget ? ' · dépassé de ' + money(used - budget) : '') : money(used) + ' utilisés · aucun budget confié'}</small><div className="member-bar"><i style={{ width: Math.min(pct, 100) + '%' }} className={pct > 100 ? 'over' : ''} /></div></div></div></button>;
       })}
       <h2>Actions</h2>
       <div className="member-soons"><Act Icon={Plus} label="Ajouter une dépense" onClick={() => doAction('expense')} /><Act Icon={Receipt} label="Scanner une facture" onClick={() => doAction('scan')} /><Act Icon={Money} label="Payer un ouvrier" onClick={() => doAction('teamPayment')} /><Act Icon={Warning} label="Signaler un incident" onClick={() => doAction('incident')} /><Act Icon={Camera} label="Photo du chantier" onClick={() => doAction('photo')} /></div>
@@ -296,7 +302,7 @@ function SiteDetail({ project, data, user, onBack, doAction }) {
     <div className="member-card member-budget"><div>
       <small>{[project.address, project.status].filter(Boolean).join(' · ')}</small>
       {showMoney && (budget > 0
-        ? <><b>Reste : {money(budget - spent)}</b><small>{money(spent)} utilisés sur {money(budget)} confiés ({pct} %)</small><div className="member-bar"><i style={{ width: Math.min(pct, 100) + '%' }} className={pct > 100 ? 'over' : ''} /></div></>
+        ? <><b className={budget - spent < 0 ? 'member-over' : ''}>{budget - spent < 0 ? 'Budget dépassé de ' + money(spent - budget) : 'Reste : ' + money(budget - spent)}</b><small>{money(spent)} utilisés sur {money(budget)} confiés ({pct} %)</small><div className="member-bar"><i style={{ width: Math.min(pct, 100) + '%' }} className={pct > 100 ? 'over' : ''} /></div></>
         : <><b>{money(spent)} utilisés</b><small>Aucun budget ne vous a encore été confié sur ce chantier.</small></>)}
     </div></div>
     <div className="member-soons">
@@ -352,7 +358,7 @@ function MemberSpace({ user, data, onRefresh, onReload, onLogout }) {
         <Brand title={!action && !project && tab === 'home' ? 'Bonjour ' + user.name : title} subtitle={ROLES[user.role]} />
         {sent && !action && <p className="info" role="status">{sent}</p>}
         {!data && <Empty text="Les données de l’entreprise ne sont pas encore disponibles." />}
-        {data && action && <EntryForm key={action.type + (action.projectId || '')} action={action} data={data} onCancel={() => setAction(null)} onDone={async (kind) => { await onReload(); setAction(null); setSent(['expense', 'teamPayment'].includes(kind) ? 'Envoyé. La direction doit maintenant valider cette saisie.' : 'Envoyé. C’est enregistré dans le dossier du chantier.'); window.scrollTo(0, 0); }} />}
+        {data && action && <EntryForm key={action.type + (action.projectId || '')} action={action} data={data} onCancel={() => setAction(null)} onDone={async (kind) => { try { await onReload(); } catch { /* l'envoi a réussi ; l'affichage se mettra à jour à la prochaine actualisation */ } setAction(null); setSent(['expense', 'teamPayment'].includes(kind) ? 'Envoyé. La direction doit maintenant valider cette saisie.' : 'Envoyé. C’est enregistré dans le dossier du chantier.'); window.scrollTo(0, 0); }} />}
         {!action && project && <SiteDetail project={project} data={data} user={user} onBack={() => setSite(null)} doAction={doAction} />}
         {!action && data && !project && <TabContent tab={tab} user={user} data={data} go={open} openSite={openSite} doAction={doAction} />}
         {!action && tab === 'home' && !project && <div className="chips member-actions"><button onClick={onRefresh}>Actualiser</button><button onClick={onLogout}><SignOut /> Se déconnecter</button></div>}
@@ -372,6 +378,7 @@ const SYNC_TEXT = {
   auth: 'Votre connexion a expiré : rouvrez la gestion de l’équipe pour reprendre l’envoi.',
   refused: 'Le serveur a refusé les données : rien n’a été remplacé.',
   tooBig: 'Données trop volumineuses pour l’envoi automatique.',
+  demo: 'Données de démonstration : rien n’est envoyé à l’équipe.',
   empty: 'Cet appareil est vide : rien n’a été envoyé.',
 };
 function TransferPanel({ getState, backupNow, engine, syncStatus, onDone }) {
@@ -387,7 +394,7 @@ function TransferPanel({ getState, backupNow, engine, syncStatus, onDone }) {
       if (engine && !engine.canRun()) throw Error('Cet onglet n’est plus à jour. Rechargez la page avant de transférer.');
       backupNow();
       const r = await transferAll(getState, { overwriteRevision });
-      if (r.needsConfirm) setAsk(r); else { setReport(r); onDone(); }
+      if (r.needsConfirm) setAsk(r); else { setReport(r); onDone(); engine?.runNow(); }
     } catch (e) { setError(e.status === 0 || e instanceof TypeError ? 'Pas de réseau : réessayez plus tard. Vos données n’ont pas bougé.' : e.message); } finally { setBusy(false); }
   };
   return (
@@ -439,10 +446,12 @@ export function TeamAdmin({ getState, backupNow, engine, syncStatus }) {
   const [workspace, setWorkspace] = useState(null);
   const [invite, setInvite] = useState(null);
   const [error, setError] = useState('');
+  const [meId, setMeId] = useState('');
   const load = async () => {
     try {
       const me = await api('/api/me');
       if (me.user.role !== 'direction') { setStatus('forbidden'); return; }
+      setMeId(me.user.id);
       const [list, ws] = await Promise.all([api('/api/users'), api('/api/workspace')]);
       setUsers(list.users); setWorkspace(ws.data); setError(''); setStatus('ready');
     } catch (e) {
@@ -475,7 +484,7 @@ export function TeamAdmin({ getState, backupNow, engine, syncStatus }) {
       {status === 'ready' && <>
         <a className="secondary wide" href="/admin">Ouvrir le tableau de bord général</a>
         <TransferPanel getState={getState} backupNow={backupNow} engine={engine} syncStatus={syncStatus} onDone={load} />
-        {users.map((u) => <div key={u.id} className={'team-member' + (u.active ? '' : ' off')}><b>{u.name}</b><br /><small>{ROLES[u.role]}{u.email ? ' · ' + u.email : ''}{u.role !== 'direction' ? ' · ' + u.projectIds.length + ' chantier(s)' : ''}{u.active ? '' : ' · Désactivé'}</small><div className="chips">{u.active && u.role !== 'direction' && <button onClick={() => makeInvite(u)}><QrCode /> Inviter</button>}{u.role !== 'direction' && (u.active ? <button className="danger" onClick={() => setActive(u, false)}>Couper l’accès</button> : <button onClick={() => setActive(u, true)}>Réactiver</button>)}</div></div>)}
+        {users.map((u) => <div key={u.id} className={'team-member' + (u.active ? '' : ' off')}><b>{u.name}</b><br /><small>{ROLES[u.role]}{u.email ? ' · ' + u.email : ''}{['chef', 'ouvrier'].includes(u.role) ? ' · ' + u.projectIds.length + ' chantier(s)' : ''}{u.active ? '' : ' · Désactivé'}</small><div className="chips">{u.active && u.id !== meId && <button onClick={() => makeInvite(u)}><QrCode /> Inviter</button>}{u.role !== 'direction' && (u.active ? <button className="danger" onClick={() => setActive(u, false)}>Couper l’accès</button> : <button onClick={() => setActive(u, true)}>Réactiver</button>)}</div></div>)}
         {invite && <div className="qr-box"><b>Invitation de {invite.name}</b><p>À scanner une seule fois avec son téléphone. Valable 7 jours.</p><img src={qrImage(invite.url)} alt={'QR code d’invitation de ' + invite.name} /><code>{invite.url}</code><div className="chips"><button onClick={() => navigator.clipboard?.writeText(invite.url)}>Copier le lien</button><button onClick={() => setInvite(null)}>Masquer</button></div></div>}
         {error && <p className="error" role="alert">{error}</p>}
         <MemberForm workspace={workspace} onSaved={load} />

@@ -31,7 +31,8 @@ export function reportHtml({ company, project, data, entries = [], photos = [], 
     summary.push(['Dépenses', money(spent)], ['Paiements de l’équipe', money(paid)]);
     const held = reservedOn(entries, project.id, data);
     if (held > 0) summary.push(['En attente de validation', money(held)]);
-    if (budget > 0) summary.push(['Budget confié', money(budget)], ['Reste du budget', money(budget - spent - paid - held)]);
+    const rest = budget - spent - paid - held;
+    if (budget > 0) summary.push(['Budget confié', money(budget)], rest < 0 ? ['Budget dépassé de', money(-rest)] : ['Reste du budget', money(rest)]);
   }
   if (finance) summary.push(['Contrat', money(finance.contract)], ['Encaissé', money(finance.received)], ['Reste facturé', money(finance.toCollect)], ['Marge estimée', money(finance.margin)]);
   const section = (title, body) => (body ? `<h2>${esc(title)}</h2>${body}` : '');

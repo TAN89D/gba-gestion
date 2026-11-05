@@ -18,6 +18,8 @@ const TABS = [
   ['access', 'Accès & rôles'],
   ['activity', 'Activité'],
 ];
+const ADMIN_LOGOUT_KEY = 'gba-admin-logout-pending';
+const readFlag = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
 const dateTime = (d) => (d ? fmtDate(d) + ' ' + String(d).slice(11, 16) + ' UTC' : '—');
 
 function Login({ onDone, forbidden, error: initialError }) {
@@ -30,6 +32,7 @@ function Login({ onDone, forbidden, error: initialError }) {
     e.preventDefault();
     setBusy(true); setError('');
     try {
+      if (readFlag(ADMIN_LOGOUT_KEY)) { await api('/api/auth/logout', { method: 'POST' }); localStorage.removeItem(ADMIN_LOGOUT_KEY); }
       await api('/api/setup', { method: 'POST', body: {}, headers: { Authorization: 'Bearer ' + key.trim() } });
       setKey('');
       onDone();
@@ -40,7 +43,12 @@ function Login({ onDone, forbidden, error: initialError }) {
       <img src="/logo.jpg" alt="GBA" />
       <h1>Tableau de bord général</h1>
       <p>{forbidden ? 'Ce compte n’a pas accès au tableau de bord. Connectez-vous avec la direction.' : 'Réservé à la direction.'}</p>
-      {google && <a href="/api/auth/google/start">Continuer avec Google</a>}
+      {google && <a href="/api/auth/google/start" onClick={async (e) => {
+        if (!readFlag(ADMIN_LOGOUT_KEY)) return;
+        // Terminer d'abord l'ancienne déconnexion, pour ne pas annuler la nouvelle connexion.
+        e.preventDefault();
+        try { await api('/api/auth/logout', { method: 'POST' }); localStorage.removeItem(ADMIN_LOGOUT_KEY); location.href = '/api/auth/google/start'; } catch { setError('Connexion Internet indisponible.'); }
+      }}>Continuer avec Google</a>}
       <form onSubmit={submit}>
         <label>Clé privée<input type="password" autoComplete="off" autoCapitalize="none" spellCheck="false" value={key} onChange={(e) => setKey(e.target.value)} /></label>
         <button type="submit" disabled={busy || !key}>{busy ? 'Connexion…' : 'Se connecter'}</button>
@@ -252,7 +260,7 @@ function Access({ users, data, me, reload }) {
         ? <EditMember user={u} data={data} isSelf={u.id === me.id} onClose={() => setEditing(null)} onSaved={async () => { setEditing(null); await reload(); }} />
         : <div className="admin-actions">
             <button onClick={() => setEditing(u.id)}>{u.id === me.id ? 'Modifier mes informations' : 'Modifier le rôle et les chantiers'}</button>
-            {u.active && u.role !== 'direction' && <button onClick={() => makeInvite(u)}>Inviter</button>}
+            {u.active && u.id !== me.id && <button onClick={() => makeInvite(u)}>Inviter</button>}
             {u.id !== me.id && (u.active ? <button className="danger" onClick={() => setActive(u, false)}>Couper l’accès</button> : <button onClick={() => setActive(u, true)}>Réactiver</button>)}
           </div>}
       {invite?.id === u.id && <div className="qr-box"><b>Invitation de {invite.name}</b><p>À scanner une seule fois avec son téléphone. Valable 7 jours.</p><img src={qrImage(invite.url)} alt={'QR code d’invitation de ' + invite.name} /><code>{invite.url}</code><div className="admin-actions"><button onClick={() => navigator.clipboard?.writeText(invite.url)}>Copier le lien</button><button onClick={() => setInvite(null)}>Masquer</button></div></div>}
@@ -270,6 +278,12 @@ export function AdminApp() {
   const [error, setError] = useState('');
   const load = async () => {
     setError('');
+    if (readFlag(ADMIN_LOGOUT_KEY)) {
+      // Une déconnexion n'a pas encore atteint le serveur : on la termine avant d'ouvrir quoi que ce soit.
+      try { await api('/api/auth/logout', { method: 'POST' }); localStorage.removeItem(ADMIN_LOGOUT_KEY); } catch { /* toujours sans réseau */ }
+      setState('login');
+      return;
+    }
     try {
       const who = await api('/api/me');
       setMe(who.user);
@@ -282,7 +296,11 @@ export function AdminApp() {
     }
   };
   useEffect(() => { document.title = 'Tableau de bord GBA'; load(); }, []);
-  const logout = async () => { try { await api('/api/auth/logout', { method: 'POST' }); } catch { /* la session expirera */ } setMe(null); setUsers([]); setWs(null); setState('login'); };
+  const logout = async () => {
+    localStorage.setItem(ADMIN_LOGOUT_KEY, '1');
+    try { await api('/api/auth/logout', { method: 'POST' }); localStorage.removeItem(ADMIN_LOGOUT_KEY); } catch { /* terminée au retour du réseau */ }
+    setMe(null); setUsers([]); setWs(null); setEntries([]); setState('login');
+  };
   if (state === 'loading') return <main className="admin admin-login"><p>Chargement…</p></main>;
   if (state === 'login') return <Login onDone={load} />;
   if (state === 'forbidden') return <Login onDone={load} forbidden />;

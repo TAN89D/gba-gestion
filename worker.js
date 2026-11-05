@@ -10,7 +10,7 @@ export default {async fetch(request,env){const u=new URL(request.url);if(!u.path
  if(request.method!=='PUT')return json({error:'Méthode non autorisée.'},405);
  if(Number(request.headers.get('Content-Length')||0)>1800000)return json({error:'Sauvegarde cloud limitée à 1,8 Mo. Exportez localement les pièces volumineuses.'},413);
  const raw=await request.text();if(raw.length>1800000)return json({error:'Sauvegarde cloud limitée à 1,8 Mo. Exportez localement les pièces volumineuses.'},413);
- const {revision,data,attachmentsOmitted}=JSON.parse(raw);if(!Number.isInteger(revision)||revision<0)return json({error:'Révision invalide.'},400);validate(data);
+ const {revision,data,attachmentsOmitted}=JSON.parse(raw);if(!Number.isInteger(revision)||revision<0)return json({error:'Révision invalide.'},400);if(data?.demo===true)return json({error:'Les données de démonstration ne peuvent pas remplacer la sauvegarde.'},400);validate(data);
  const previous=attachmentsOmitted===true?await env.DB.prepare('SELECT payload FROM workspace WHERE id=1 AND revision=?').bind(revision).first():null;
  const payload=JSON.stringify(previous?keepAttachments(data,previous.payload):data),now=new Date().toISOString();let result;
  if(revision===0)result=await env.DB.prepare('INSERT OR IGNORE INTO workspace(id,revision,payload,updated_at) VALUES(1,1,?,?)').bind(payload,now).run();
