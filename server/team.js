@@ -752,6 +752,75 @@ async function listPresence(request, env, url) {
   return reply({ date, presences: visible.map(publicPresence) });
 }
 
+// ---- Notifications : ce qui est nouveau pour cette personne depuis sa dernière visite ----
+// Rien n'est stocké en plus : tout est calculé à partir des saisies, demandes, messages et pointages.
+const KIND_TEXT = { expense: 'Dépense à valider', teamPayment: 'Paiement d’ouvrier à valider', incident: 'Problème signalé', photo: 'Photo du chantier' };
+const DECISION_TEXT = { approved: 'Validée', rejected: 'Refusée', resolved: 'Problème réglé' };
+const STEP_TEXT = { besoin: 'Besoin de matériel', demande: 'Demande de matériel transmise', commande: 'Bon de commande établi', livre: 'Matériel arrivé sur le chantier', recu: 'Matériel reçu', refuse: 'Demande de matériel refusée' };
+async function notifications(request, env, url) {
+  const user = await requireUser(request, env);
+  const floor = new Date(Date.now() - 7 * 86400000).toISOString();
+  const asked = String(url.searchParams.get('since') || '');
+  const since = /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(asked) && asked > floor ? asked : floor;
+  const { current, ids } = await visibleProjects(env, user);
+  const site = (id) => current?.data.projects.find((p) => p.id === id)?.name || '';
+  const lead = user.role !== 'ouvrier';
+  const items = [];
+  const cid = user.companyId;
+  // Nouvelles saisies de l'équipe (pour le chef, le gestionnaire et la direction).
+  if (lead) {
+    const { results } = await env.DB.prepare('SELECT id,kind,project_id,user_id,user_name,data,created_at,audio IS NOT NULL AS has_audio FROM entries WHERE company_id=? AND created_at>? AND user_id<>? ORDER BY created_at DESC LIMIT 60').bind(cid, since, user.id).all();
+    for (const r of results) {
+      if (!entryAllowed(r, user, ids)) continue;
+      const d = JSON.parse(r.data);
+      items.push({ id: 'e-' + r.id, at: r.created_at, kind: r.kind, title: KIND_TEXT[r.kind] || 'Saisie', text: [r.user_name, site(r.project_id), d.description || d.note || ''].filter(Boolean).join(' · '), entryId: r.id, hasAudio: !!r.has_audio, projectId: r.project_id });
+    }
+  }
+  // Réponses de la direction sur mes propres saisies.
+  {
+    const { results } = await env.DB.prepare("SELECT id,kind,project_id,data,status,reason,decided_at FROM entries WHERE company_id=? AND user_id=? AND decided_at>? AND status IN ('approved','rejected','resolved') ORDER BY decided_at DESC LIMIT 30").bind(cid, user.id, since).all();
+    for (const r of results) {
+      const d = JSON.parse(r.data);
+      items.push({ id: 'd-' + r.id + '-' + r.decided_at, at: r.decided_at, kind: 'decision', title: DECISION_TEXT[r.status] + ' : ' + (d.description || d.note || KIND_TEXT[r.kind] || ''), text: [site(r.project_id), r.reason || ''].filter(Boolean).join(' · '), entryId: r.id, projectId: r.project_id });
+    }
+  }
+  // Demandes de matériel qui ont avancé (sauf si c'est moi qui les ai fait avancer).
+  {
+    const { results } = await env.DB.prepare('SELECT id,project_id,user_id,user_name,items,status,history,updated_at FROM material_requests WHERE company_id=? AND updated_at>? ORDER BY updated_at DESC LIMIT 40').bind(cid, since).all();
+    for (const r of results) {
+      if (!requestAllowed(r, user, ids) || (!lead && r.user_id !== user.id)) continue;
+      const last = JSON.parse(r.history || '[]').slice(-1)[0] || {};
+      if (last.by === user.name) continue;
+      const list = JSON.parse(r.items || '[]').map((x) => x.description).join(', ');
+      items.push({ id: 'r-' + r.id + '-' + r.status, at: r.updated_at, kind: 'request', title: STEP_TEXT[r.status] || 'Demande de matériel', text: [last.by || r.user_name, site(r.project_id), list].filter(Boolean).join(' · '), projectId: r.project_id });
+    }
+  }
+  // Messages des autres dans les discussions qui me concernent.
+  {
+    const { results } = await env.DB.prepare(`SELECT m.id,m.thread_id,m.user_name,m.text,m.created_at,
+      e.user_id AS e_user,e.project_id AS e_project,e.kind AS e_kind,r.user_id AS r_user,r.project_id AS r_project
+      FROM messages m LEFT JOIN entries e ON e.id=m.thread_id AND e.company_id=m.company_id LEFT JOIN material_requests r ON r.id=m.thread_id AND r.company_id=m.company_id
+      WHERE m.company_id=? AND m.created_at>? AND m.user_id<>? ORDER BY m.created_at DESC LIMIT 40`).bind(cid, since, user.id).all();
+    for (const m of results) {
+      const owner = m.e_user || m.r_user;
+      const project = m.e_project || m.r_project;
+      const allowed = m.e_user ? entryAllowed({ kind: m.e_kind, user_id: m.e_user, project_id: m.e_project }, user, ids) : m.r_user ? requestAllowed({ user_id: m.r_user, project_id: m.r_project }, user, ids) : false;
+      if (!allowed || (!lead && owner !== user.id)) continue;
+      items.push({ id: 'm-' + m.id, at: m.created_at, kind: 'message', title: 'Message de ' + m.user_name, text: [site(project), m.text].filter(Boolean).join(' · '), entryId: m.e_user ? m.thread_id : undefined, projectId: project });
+    }
+  }
+  // Arrivées sur les chantiers (pour le chef, le gestionnaire et la direction).
+  if (lead) {
+    const { results } = await env.DB.prepare('SELECT id,project_id,user_id,user_name,time,created_at FROM presences WHERE company_id=? AND created_at>? AND user_id<>? ORDER BY created_at DESC LIMIT 40').bind(cid, since, user.id).all();
+    for (const p of results) {
+      if (!seesMoney(user) && !ids.has(p.project_id)) continue;
+      items.push({ id: 'p-' + p.id, at: p.created_at, kind: 'presence', title: p.user_name + ' est arrivé à ' + p.time, text: site(p.project_id), projectId: p.project_id });
+    }
+  }
+  items.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+  return reply({ now: new Date().toISOString(), items: items.slice(0, 80) });
+}
+
 // ---- Espace client : lien de suivi d'un chantier, en lecture seule, sans compte ----
 // Le lien contient un jeton aléatoire enregistré sur le chantier par la direction.
 // Le client ne voit que son chantier : avancement, montants de son contrat, notes d'avancement et photos.
@@ -817,6 +886,7 @@ export async function handleTeam(request, env) {
     if (method === 'GET' && path === '/api/config') return reply({ google: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET), signup: env.SIGNUP === '1' });
     if (method === 'POST' && path === '/api/presence') return await createPresence(request, env);
     if (method === 'GET' && path === '/api/presence') return await listPresence(request, env, url);
+    if (method === 'GET' && path === '/api/notifications') return await notifications(request, env, url);
     const follow = path.match(/^\/api\/suivi\/([\w-]{1,64})$/);
     if (follow && method === 'GET') return await clientFollow(env, follow[1]);
     if (method === 'GET' && path === '/api/me') return reply({ user: await requireUser(request, env) });

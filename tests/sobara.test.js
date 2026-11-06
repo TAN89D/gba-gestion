@@ -184,3 +184,32 @@ test('résumé du jour pour WhatsApp, et référence Orange Money conservée à 
   const b = entryToAction({ id: 'y', kind: 'teamPayment', accountId: 'k', userName: 'A', data: { taskId: 't', amount: 5, method: 'Espèces', reference: '', date: '2026-11-06' } });
   assert.equal(b.data.reference, undefined);
 });
+
+test('notifications : le chef voit le problème vocal de l’ouvrier et sa réponse revient à l’ouvrier', async () => {
+  const env = makeEnv({ DEMO: '1' });
+  const enter = async (role) => cookieOf(await raw(env, 'POST', '/api/demo/enter', { role }));
+  const ouvrier = await enter('ouvrier');
+  const chef = await enter('chef');
+  const boss = await enter('direction');
+  const audio = 'data:audio/webm;base64,GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQRChYEC';
+  const inc = await (await raw(env, 'POST', '/api/entries', { kind: 'incident', projectId: 'p-villa', audio }, ouvrier)).json();
+  assert.equal((await raw(env, 'POST', '/api/presence', { projectId: 'p-villa' }, ouvrier)).status, 201);
+  const list = async (who) => (await (await raw(env, 'GET', '/api/notifications', undefined, who)).json()).items;
+  const forChef = await list(chef);
+  const vocal = forChef.find((x) => x.entryId === inc.entry.id);
+  assert.equal(vocal.title, 'Problème signalé');
+  assert.equal(vocal.hasAudio, true);
+  assert.ok(forChef.some((x) => x.kind === 'presence' && /Moussa Diarra est arrivé/.test(x.title)));
+  assert.ok(!forChef.some((x) => x.kind === 'expense' && x.text.startsWith('Adama')), 'pas ses propres saisies');
+  // L'ouvrier ne reçoit pas les saisies des autres, seulement ce qui le concerne.
+  assert.ok(!(await list(ouvrier)).some((x) => x.kind === 'presence' || x.entryId === inc.entry.id && x.kind === 'incident'));
+  assert.equal((await raw(env, 'POST', `/api/threads/${inc.entry.id}`, { text: 'J’arrive avec les outils.' }, chef)).status, 201);
+  assert.equal((await raw(env, 'POST', `/api/entries/${inc.entry.id}/decision`, { decision: 'resolve', reason: 'Réparé' }, boss)).status, 200);
+  const forWorker = await list(ouvrier);
+  assert.ok(forWorker.some((x) => x.kind === 'message' && x.title === 'Message de Adama Traoré'));
+  assert.ok(forWorker.some((x) => x.kind === 'decision' && /Problème réglé/.test(x.title)));
+  // « Depuis » : rien de nouveau après maintenant.
+  const now = new Date(Date.now() + 1000).toISOString();
+  assert.equal((await (await raw(env, 'GET', '/api/notifications?since=' + now, undefined, chef)).json()).items.length, 0);
+  assert.equal((await raw(env, 'GET', '/api/notifications')).status, 401);
+});

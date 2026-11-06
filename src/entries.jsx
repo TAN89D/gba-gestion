@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Camera, ArrowLeft, FileText, Microphone, Stop, Trash } from '@phosphor-icons/react';
+import { Camera, ArrowLeft, FileText, Microphone, Stop, Trash, Bell as BellIcon, X } from '@phosphor-icons/react';
 import { api } from './team.jsx';
 import { fmtDate, money, today, uid, EXPENSE_CATEGORIES, PAY_METHODS } from './domain.js';
 import { ENTRY_LABELS, STATUS_LABELS } from './entries.js';
@@ -166,4 +166,58 @@ export function MyEntries({ entries, title = 'Mes saisies et le suivi' }) {
   const rows = entries.filter((e) => e.kind !== 'photo');
   if (!rows.length) return null;
   return <section><h2>{title}</h2>{rows.slice(0, 30).map((e) => <div className="member-card member-budget" key={e.id}><div><b>{e.data.description || e.data.note || ENTRY_LABELS[e.kind]}</b><small>{ENTRY_LABELS[e.kind]} · {fmtDate(e.data.date)} · {e.userName}{e.data.amount ? ' · ' + money(e.data.amount) : ''}</small><div><span className={'member-tag' + (e.status === 'rejected' ? ' member-tag-bad' : '')}>{e.status === 'open' && e.messages > 0 ? 'En cours' : STATUS_LABELS[e.status]}</span></div>{e.hasAudio && <AudioView id={e.id} />}{e.reason && <small>{e.kind === 'incident' ? 'Réponse : ' : 'Motif : '}{e.reason}</small>}{e.kind === 'incident' && <Thread id={e.id} count={e.messages} />}</div></div>)}</section>;
+}
+
+// ---- Notifications : une cloche avec le nombre de nouveautés, vérifiée toutes les 30 secondes ----
+const SEEN_KEY = 'gba-notifications-vues';
+const ICONS = { incident: '⚠️', photo: '📷', expense: '💰', teamPayment: '💰', decision: '✅', request: '📦', message: '💬', presence: '👷' };
+function ring() {
+  try { navigator.vibrate?.([200, 100, 200]); } catch { /* sans vibreur */ }
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    [880, 1175].forEach((hz, i) => { const o = ctx.createOscillator(); const g = ctx.createGain(); o.frequency.value = hz; g.gain.value = 0.15; o.connect(g); g.connect(ctx.destination); o.start(ctx.currentTime + i * 0.18); o.stop(ctx.currentTime + i * 0.18 + 0.15); });
+  } catch { /* son indisponible */ }
+}
+const ago = (iso) => { const m = Math.round((Date.now() - new Date(iso).getTime()) / 60000); return m < 1 ? 'à l’instant' : m < 60 ? 'il y a ' + m + ' min' : m < 1440 ? 'il y a ' + Math.round(m / 60) + ' h' : fmtDate(iso.slice(0, 10)); };
+export function Bell() {
+  const [items, setItems] = useState(null);
+  const [open, setOpen] = useState(false);
+  const [seen, setSeen] = useState(() => { try { return localStorage.getItem(SEEN_KEY) || ''; } catch { return ''; } });
+  const known = React.useRef(null);
+  useEffect(() => {
+    let live = true;
+    const load = async () => {
+      if (document.hidden) return;
+      try {
+        const r = await api('/api/notifications');
+        if (!live) return;
+        const fresh = r.items.filter((x) => !known.current?.has(x.id) && x.at > (localStorage.getItem(SEEN_KEY) || ''));
+        if (known.current && fresh.length) ring();
+        known.current = new Set(r.items.map((x) => x.id));
+        setItems(r.items);
+      } catch (x) { if (x.status === 401 || x.status === 404) setItems(false); }
+    };
+    load();
+    const t = setInterval(load, 30000);
+    const back = () => { if (!document.hidden) load(); };
+    document.addEventListener('visibilitychange', back);
+    return () => { live = false; clearInterval(t); document.removeEventListener('visibilitychange', back); };
+  }, []);
+  const unread = (items || []).filter((x) => x.at > seen).length;
+  useEffect(() => {
+    try { if (unread) navigator.setAppBadge?.(unread); else navigator.clearAppBadge?.(); } catch { /* pastille non prise en charge */ }
+    const base = document.title.replace(/^\(\d+\) /, '');
+    document.title = unread ? '(' + unread + ') ' + base : base;
+  }, [unread]);
+  if (items === false || items === null) return null;
+  const markSeen = () => { const now = new Date().toISOString(); try { localStorage.setItem(SEEN_KEY, now); } catch { /* sans stockage */ } setSeen(now); };
+  return <>
+    <button type="button" className={'bell' + (unread ? ' on' : '')} aria-label={unread ? unread + ' nouvelle(s) notification(s)' : 'Notifications'} onClick={() => setOpen(true)}><BellIcon size={26} weight={unread ? 'fill' : 'regular'} />{unread > 0 && <span className="bell-count">{unread > 99 ? '99+' : unread}</span>}</button>
+    {open && <div className="modal-backdrop" onClick={(ev) => { if (ev.target === ev.currentTarget) { markSeen(); setOpen(false); } }}><section className="modal bell-panel" role="dialog" aria-modal="true" aria-label="Notifications">
+      <div className="modal-head"><h2>Notifications</h2><button type="button" className="icon" aria-label="Fermer" onClick={() => { markSeen(); setOpen(false); }}><X /></button></div>
+      {!items.length && <p className="subtle">Rien de nouveau depuis 7 jours.</p>}
+      {items.map((x) => <div key={x.id} className={'bell-item' + (x.at > seen ? ' new' : '')}><span className="bell-ico" aria-hidden="true">{ICONS[x.kind] || '🔔'}</span><div><b>{x.title}</b>{x.text && <small>{x.text}</small>}<small className="bell-when">{ago(x.at)}</small>{x.hasAudio && <AudioView id={x.entryId} />}</div></div>)}
+      {items.length > 0 && <button type="button" className="secondary wide" onClick={() => { markSeen(); setOpen(false); }}>Tout est vu</button>}
+    </section></div>}
+  </>;
 }

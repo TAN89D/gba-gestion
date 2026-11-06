@@ -91,3 +91,18 @@
 .welcome-points{list-style:none;padding:0;margin:18px auto;text-align:left;display:grid;gap:8px;max-width:460px}
 .welcome-points li{display:flex;gap:10px;align-items:center;font-weight:600}.welcome-points svg{color:#16a34a}
 .welcome-box{text-align:left;margin-top:16px}
+/* Notifications */
+.header-actions{display:flex;align-items:center;gap:4px}
+.bell{position:relative;border:0;background:none;min-height:44px;width:46px;padding:0;color:#142e53}
+.bell.on{color:#ec8515;animation:bell 1.6s ease-in-out 2}
+@keyframes bell{20%{transform:rotate(14deg)}40%{transform:rotate(-12deg)}60%{transform:rotate(6deg)}80%{transform:rotate(0)}}
+.bell-count{position:absolute;top:2px;right:0;min-width:20px;height:20px;border-radius:10px;background:#dc2626;color:#fff;font-size:12px;font-weight:700;display:grid;place-items:center;padding:0 5px}
+.bell-corner{position:absolute;top:14px;right:12px;z-index:5}
+.member-screen{position:relative}
+.bell-panel{max-height:85vh;overflow:auto}
+.bell-item{display:flex;gap:12px;padding:12px 4px;border-bottom:1px solid var(--line)}
+.bell-item.new{background:#fff8ee;border-radius:10px;padding:12px 8px}
+.bell-item>div{flex:1;min-width:0;overflow-wrap:anywhere}
+.bell-ico{font-size:22px;line-height:1.2}
+.bell-when{font-size:12px!important}
+.member-with-tabs .member-brand{padding-right:52px}

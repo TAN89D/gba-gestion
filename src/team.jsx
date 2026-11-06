@@ -5,7 +5,7 @@ import { ROLES } from './permissions.js';
 import { money, fmtDate } from './domain.js';
 import { readSync, writeSync, counts, transferAll } from './sync.js';
 import { reservedOn } from './entries.js';
-import { EntryForm, FORM_TITLES, MyEntries, PhotoGrid, ReportButton } from './entries.jsx';
+import { EntryForm, FORM_TITLES, MyEntries, PhotoGrid, ReportButton, Bell } from './entries.jsx';
 import { RequestForm, RequestList, CashTab } from './requests.jsx';
 import { BRAND, DEMO, SAAS, logoOf } from './brand.js';
 import { InstallCard } from './install.jsx';
@@ -438,6 +438,7 @@ function MemberSpace({ user, data, onRefresh, onReload, onLogout }) {
   return (
     <>
       <main className="member-screen member-with-tabs">
+        <div className="bell-corner"><Bell /></div>
         <Brand title={!action && !project && tab === 'home' ? 'Bonjour ' + user.name : title} subtitle={[ROLES[user.role], data?.settings?.company].filter(Boolean).join(' · ')} logo={data?.settings?.logo ? logoOf(data.settings) : ''} />
         {!action && !project && tab === 'home' && <InstallCard />}
         {sent && !action && <p className="info" role="status">{sent}</p>}
