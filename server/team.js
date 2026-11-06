@@ -71,7 +71,7 @@ const publicUser = (row) => ({
   projectIds: JSON.parse(row.project_ids || '[]'), active: !!row.active,
 });
 
-async function startSession(env, url, userId) {
+export async function startSession(env, url, userId) {
   const token = randomToken();
   await env.DB.prepare('DELETE FROM sessions WHERE expires_at < ?').bind(nowSeconds()).run();
   await env.DB.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)')
@@ -400,14 +400,14 @@ async function createEntry(request, env) {
     const description = shortText(body.description, 300, 'Désignation');
     if (!description) fail(400, 'Désignation obligatoire.');
     const scope = ['Chantier', 'Entreprise', 'Personnel'].includes(body.scope) ? body.scope : 'Chantier';
-    data = { description, amount: validAmount(body.amount), scope, category: shortText(body.category, 60, 'Catégorie') || 'Autres', method: shortText(body.method, 40, 'Mode'), date };
+    data = { description, amount: validAmount(body.amount), scope, category: shortText(body.category, 60, 'Catégorie') || 'Autres', method: shortText(body.method, 40, 'Mode'), reference: shortText(body.reference, 60, 'Référence'), date };
   } else if (body.kind === 'teamPayment') {
     const task = current.data.tasks.find((t) => t.id === body.taskId && t.projectId === body.projectId);
     if (!task) fail(400, 'Choisissez une tâche de ce chantier.');
     const amount = validAmount(body.amount);
     const paid = current.data.teamPayments.filter((p) => !p.void && p.taskId === task.id).reduce((n, p) => n + Number(p.amount || 0), 0);
     if (amount > Number(task.agreedAmount) - paid - await reservedOnTask(env, task.id, current.data)) fail(400, 'Le paiement dépasse le reste à payer de cette tâche.');
-    data = { taskId: task.id, employeeId: task.employeeId, description: shortText(task.description, 300, 'Tâche'), amount, method: shortText(body.method, 40, 'Mode'), date };
+    data = { taskId: task.id, employeeId: task.employeeId, description: shortText(task.description, 300, 'Tâche'), amount, method: shortText(body.method, 40, 'Mode'), reference: shortText(body.reference, 60, 'Référence'), date };
   } else if (body.kind === 'incident') {
     const note = shortText(body.note, 2000, 'Description');
     if (!note) fail(400, 'Décrivez le problème.');
@@ -665,6 +665,75 @@ async function postMessage(request, env, id) {
   return reply({ ok: true }, 201);
 }
 
+// ---- Pointage : « Je suis arrivé » sur le chantier, avec l'heure du serveur et la position si elle est donnée ----
+const PRESENCE_ROLES = ['gestionnaire', 'chef', 'ouvrier'];
+const publicPresence = (r) => ({ id: r.id, projectId: r.project_id, userId: r.user_id, userName: r.user_name, role: r.role, date: r.date, time: r.time, lat: r.lat, lng: r.lng, note: r.note || '' });
+async function createPresence(request, env) {
+  const user = await requireUser(request, env);
+  if (!PRESENCE_ROLES.includes(user.role)) fail(403, 'Le pointage est réservé à l’équipe de chantier.');
+  const body = await readJson(request);
+  const { current, ids } = await visibleProjects(env, user);
+  if (!current) fail(409, 'Les données de l’entreprise ne sont pas encore disponibles.');
+  if (typeof body.projectId !== 'string' || !ids.has(body.projectId)) fail(403, 'Chantier non autorisé.');
+  const now = new Date();
+  const date = now.toISOString().slice(0, 10);
+  const id = typeof body.id === 'string' && /^[\w-]{8,64}$/.test(body.id) ? body.id : crypto.randomUUID();
+  // Un seul pointage par personne, par chantier et par jour : un second envoi renvoie le premier.
+  const already = await env.DB.prepare('SELECT * FROM presences WHERE user_id=? AND project_id=? AND date=?').bind(user.id, body.projectId, date).first();
+  if (already) return reply({ presence: publicPresence(already) }, 200);
+  let lat = null, lng = null;
+  const la = Number(body.lat), lo = Number(body.lng);
+  if (body.lat != null && body.lng != null && Number.isFinite(la) && Number.isFinite(lo) && Math.abs(la) <= 90 && Math.abs(lo) <= 180) { lat = Math.round(la * 100000) / 100000; lng = Math.round(lo * 100000) / 100000; }
+  await env.DB.prepare('INSERT OR IGNORE INTO presences(id,project_id,user_id,user_name,role,date,time,lat,lng,note,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
+    .bind(id, body.projectId, user.id, user.name, user.role, date, now.toISOString().slice(11, 16), lat, lng, shortText(body.note, 200, 'Note'), now.toISOString()).run();
+  const row = await env.DB.prepare('SELECT * FROM presences WHERE user_id=? AND project_id=? AND date=?').bind(user.id, body.projectId, date).first();
+  return reply({ presence: publicPresence(row) }, 201);
+}
+async function listPresence(request, env, url) {
+  const user = await requireUser(request, env);
+  const date = validDate(url.searchParams.get('date') || undefined);
+  const { results } = await env.DB.prepare('SELECT * FROM presences WHERE date=? ORDER BY time').bind(date).all();
+  const { ids } = await visibleProjects(env, user);
+  // Direction et gestionnaire voient tout le monde ; le chef, ses chantiers ; l'ouvrier, lui-même.
+  const visible = results.filter((r) => (seesMoney(user) ? true : user.role === 'chef' ? ids.has(r.project_id) : r.user_id === user.id));
+  return reply({ date, presences: visible.map(publicPresence) });
+}
+
+// ---- Espace client : lien de suivi d'un chantier, en lecture seule, sans compte ----
+// Le lien contient un jeton aléatoire enregistré sur le chantier par la direction.
+// Le client ne voit que son chantier : avancement, montants de son contrat, notes d'avancement et photos.
+// Seules ces notes du journal sont montrées au client ; « Note » et « Incident » restent internes.
+const CLIENT_NOTES = ['Avancement', 'Réception'];
+export function clientView(data, token) {
+  if (typeof token !== 'string' || !/^[\w-]{20,64}$/.test(token)) return null;
+  const project = data?.projects?.find((p) => p.shareToken === token && p.status !== 'Supprimé');
+  if (!project) return null;
+  const live = (rows) => (rows || []).filter((x) => !x.void);
+  const ht = (d) => (d.lines || []).reduce((n, l) => n + Number(l.quantity) * Number(l.unitPrice), 0) - (Number(d.discount) || 0);
+  const ttc = (d) => Math.round(ht(d) * (1 + (Number(d.tax) || 0) / 100));
+  const invoices = live(data.invoices).filter((i) => i.projectId === project.id);
+  const billed = invoices.reduce((n, i) => n + ttc(i), 0);
+  const paid = live(data.payments).filter((x) => invoices.some((i) => i.id === x.invoiceId)).reduce((n, x) => n + Number(x.amount || 0), 0);
+  const client = data.clients.find((c) => c.id === project.clientId);
+  const journal = (data.journal || []).filter((j) => j.projectId === project.id && CLIENT_NOTES.includes(j.kind)).slice(-20).reverse().map((j) => ({ date: j.date || '', kind: j.kind || 'Note', note: String(j.note || '').slice(0, 1000) }));
+  const photos = (data.attachments || []).filter((a) => a.entityType === 'projects' && a.entityId === project.id && /^data:image\/(jpeg|png|webp);base64,/.test(a.url)).slice(-8).reverse().map((a) => ({ url: a.url, date: a.date || '', name: a.name || '' }));
+  const s = data.settings || {};
+  return {
+    company: { name: s.company || '', phone: s.phone || '', email: s.email || '' },
+    client: client?.name || '',
+    project: { name: project.name, status: project.status || '', address: project.address || '', startDate: project.startDate || '', expectedEndDate: project.expectedEndDate || '', progress: Number(project.progress || 0) },
+    money: { contract: Number(project.contractAmount || 0), billed, paid, due: Math.max(0, billed - paid) },
+    payments: live(data.payments).filter((x) => invoices.some((i) => i.id === x.invoiceId)).slice(-10).reverse().map((x) => ({ date: x.date || '', amount: Number(x.amount || 0), method: x.method || '', number: x.number || '' })),
+    journal, photos,
+  };
+}
+async function clientFollow(env, token) {
+  const current = await readWorkspace(env);
+  const view = current && clientView(current.data, token);
+  if (!view) fail(404, 'Ce lien de suivi n’existe pas ou a été arrêté.');
+  return reply(view);
+}
+
 export async function handleTeam(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
@@ -684,6 +753,10 @@ export async function handleTeam(request, env) {
     if (method === 'GET' && path === '/api/auth/google/callback') return await googleCallback(request, env, url);
     if (method === 'POST' && path === '/api/auth/logout') return await logout(request, env, url);
     if (method === 'GET' && path === '/api/config') return reply({ google: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) });
+    if (method === 'POST' && path === '/api/presence') return await createPresence(request, env);
+    if (method === 'GET' && path === '/api/presence') return await listPresence(request, env, url);
+    const follow = path.match(/^\/api\/suivi\/([\w-]{1,64})$/);
+    if (follow && method === 'GET') return await clientFollow(env, follow[1]);
     if (method === 'GET' && path === '/api/me') return reply({ user: await requireUser(request, env) });
     if (method === 'GET' && path === '/api/workspace') return await workspace(request, env);
     if (method === 'PUT' && path === '/api/workspace') return await importWorkspace(request, env);

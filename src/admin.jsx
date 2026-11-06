@@ -7,6 +7,8 @@ import { ENTRY_LABELS, STATUS_LABELS, itemsText } from './entries.js';
 import { PhotoGrid, PhotoView, ReportButton, MyEntries } from './entries.jsx';
 import { Thread, requestStatus, printOrder } from './requests.jsx';
 import { spending, overspending, cashbox } from './cashbox.js';
+import { BRAND, DEMO } from './brand.js';
+import { leaveDemo } from './demo.jsx';
 import './admin.css';
 
 const TABS = [
@@ -44,7 +46,7 @@ function Login({ onDone, forbidden, error: initialError }) {
   };
   return (
     <main className="admin admin-login">
-      <img src="/logo.jpg" alt="GBA" />
+      <img src={BRAND.logo} alt={BRAND.alt} />
       <h1>Tableau de bord général</h1>
       <p>{forbidden ? 'Ce compte n’a pas accès au tableau de bord. Connectez-vous avec la direction.' : 'Réservé à la direction.'}</p>
       {google && <a href="/api/auth/google/start" onClick={async (e) => {
@@ -85,7 +87,7 @@ function DayBox({ data }) {
     </section>
   </div>;
 }
-function Home({ data, users, go, entries, requests }) {
+function Home({ data, users, go, entries, requests, presences = [] }) {
   const o = overview(data);
   const toDo = entries.filter((e) => ['pending', 'open'].includes(e.status)).length;
   const toOrder = requests.filter((r) => r.status === 'demande').length;
@@ -93,6 +95,7 @@ function Home({ data, users, go, entries, requests }) {
     {toDo > 0 && <div className="admin-note"><b>{toDo} élément(s) de l’équipe à traiter.</b> <button className="admin-link" onClick={() => go('queue')}>Voir</button></div>}
     {toOrder > 0 && <div className="admin-note"><b>{toOrder} demande(s) de matériel attendent un bon de commande.</b> <button className="admin-link" onClick={() => go('material')}>Voir</button></div>}
     <DayBox data={data} />
+    <section className="admin-box"><h3>Présents sur les chantiers aujourd’hui ({presences.length})</h3>{presences.length ? <ul className="admin-list">{presences.map((p) => <li key={p.id}><b>{p.userName}</b> · arrivé à {p.time} · {data.projects.find((x) => x.id === p.projectId)?.name || 'Chantier'}{p.lat != null && <> · <a href={'https://www.openstreetmap.org/?mlat=' + p.lat + '&mlon=' + p.lng + '#map=17/' + p.lat + '/' + p.lng} target="_blank" rel="noopener">voir la position</a></>}</li>)}</ul> : <p className="admin-empty">Personne n’a encore pointé aujourd’hui.</p>}</section>
     <div className="admin-kpis">
       <Kpi label="Disponible en caisse" value={money(o.cash)} tone={o.cash < 0 ? 'bad' : 'good'} />
       <Kpi label="Facturé" value={money(o.invoiced)} />
@@ -368,6 +371,7 @@ export function AdminApp() {
   const [ws, setWs] = useState(null);
   const [entries, setEntries] = useState([]);
   const [requests, setRequests] = useState([]);
+  const [presences, setPresences] = useState([]);
   const [tab, setTab] = useState('home');
   const [error, setError] = useState('');
   const load = async () => {
@@ -382,15 +386,16 @@ export function AdminApp() {
       const who = await api('/api/me');
       setMe(who.user);
       if (who.user.role !== 'direction') { setState('forbidden'); return; }
-      const [list, workspace, saisies, demandes] = await Promise.all([api('/api/users'), api('/api/workspace'), api('/api/entries'), api('/api/requests')]);
-      setUsers(list.users); setWs(workspace); setEntries(saisies.entries); setRequests(demandes.requests); setState('ready');
+      const [list, workspace, saisies, demandes, pres] = await Promise.all([api('/api/users'), api('/api/workspace'), api('/api/entries'), api('/api/requests'), api('/api/presence').catch(() => ({ presences: [] }))]);
+      setUsers(list.users); setWs(workspace); setEntries(saisies.entries); setRequests(demandes.requests); setPresences(pres.presences || []); setState('ready');
     } catch (x) {
-      if (x.status === 401) { setState('login'); return; }
+      if (x.status === 401) { if (DEMO) { leaveDemo(); return; } setState('login'); return; }
       setError(x.message); setState('error');
     }
   };
-  useEffect(() => { document.title = 'Tableau de bord GBA'; load(); }, []);
+  useEffect(() => { document.title = 'Tableau de bord ' + (DEMO ? 'SoBara' : 'GBA'); load(); }, []);
   const logout = async () => {
+    if (DEMO) { await leaveDemo(); return; }
     localStorage.setItem(ADMIN_LOGOUT_KEY, '1');
     try { await api('/api/auth/logout', { method: 'POST' }); localStorage.removeItem(ADMIN_LOGOUT_KEY); } catch { /* terminée au retour du réseau */ }
     setMe(null); setUsers([]); setWs(null); setEntries([]); setRequests([]); setState('login');
@@ -404,11 +409,11 @@ export function AdminApp() {
   const toOrder = requests.filter((r) => r.status === 'demande').length;
   const Page = { projects: Projects, invoices: Invoices, expenses: Expenses, workers: Workers, activity: Activity }[tab];
   return <div className="admin">
-    <header className="admin-top"><img src="/logo.jpg" alt="GBA" /><div className="admin-grow"><h1>Tableau de bord général</h1><small>{data?.settings?.company || 'GBA Gestion'} · {me.name}</small></div><button onClick={load}>Actualiser</button><button onClick={logout}>Se déconnecter</button></header>
+    <header className="admin-top"><img src={BRAND.logo} alt={BRAND.alt} /><div className="admin-grow"><h1>Tableau de bord général</h1><small>{data?.settings?.company || BRAND.name} · {me.name}</small></div><button onClick={load}>Actualiser</button><button onClick={logout}>Se déconnecter</button></header>
     <nav className="admin-tabs" aria-label="Sections">{TABS.map(([k, label]) => <button key={k} className={tab === k ? 'on' : ''} aria-current={tab === k ? 'page' : undefined} onClick={() => setTab(k)}>{label}{k === 'queue' && pendingCount > 0 ? ` (${pendingCount})` : ''}{k === 'material' && toOrder > 0 ? ` (${toOrder})` : ''}</button>)}</nav>
     <main className="admin-main">
       {tab !== 'access' && <p className="admin-note">{data ? <>Données reçues de votre téléphone. Dernière mise à jour : {dateTime(ws.updatedAt)}. Les saisies se font pour l’instant dans l’application.</> : 'Aucune donnée pour le moment : lancez le transfert depuis votre téléphone.'}</p>}
-      {tab === 'access' ? <Access users={users} data={data} me={me} reload={load} /> : !data ? null : tab === 'home' ? <Home data={data} users={users} go={setTab} entries={entries} requests={requests} /> : tab === 'queue' ? <Queue entries={entries} data={data} reload={load} /> : tab === 'material' ? <Material requests={requests} data={data} reload={load} /> : tab === 'cash' ? <Cashboxes data={data} /> : tab === 'folders' ? <Folders data={data} entries={entries} /> : <Page data={data} />}
+      {tab === 'access' ? <Access users={users} data={data} me={me} reload={load} /> : !data ? null : tab === 'home' ? <Home data={data} users={users} go={setTab} entries={entries} requests={requests} presences={presences} /> : tab === 'queue' ? <Queue entries={entries} data={data} reload={load} /> : tab === 'material' ? <Material requests={requests} data={data} reload={load} /> : tab === 'cash' ? <Cashboxes data={data} /> : tab === 'folders' ? <Folders data={data} entries={entries} /> : <Page data={data} />}
     </main>
   </div>;
 }

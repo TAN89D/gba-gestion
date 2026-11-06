@@ -1,4 +1,4 @@
-import { active, balance, find, sum, projectStats } from './domain.js';
+import { active, balance, find, sum, projectStats, money, fmtDate, totals } from './domain.js';
 
 // Catégorie utilisée pour les paiements de l'équipe dans les répartitions.
 export const PAY_CATEGORY = 'Paie ouvriers';
@@ -80,3 +80,6 @@ export function overspending(s) {
 
 // Caisses tenues par une fiche de l'équipe (le chef de chantier ou le gestionnaire).
 export const heldBy = (s, employeeId) => (employeeId ? s.accounts.filter((a) => a.holderId === employeeId) : []);
+
+// Résumé du jour en texte simple, prêt à partager sur WhatsApp (le patron choisit le destinataire).
+export function dayReport(s,day,v=spending(s,day),over=overspending(s)){const L=['*Résumé du '+fmtDate(day)+' – '+s.settings.company+'*','','Dépenses : '+money(v.total)+' ('+v.rows.length+')',...v.bySite.map(g=>'• '+g.name+' : '+money(g.amount))];const inc=active(s.payments).filter(p=>p.date===day);if(inc.length)L.push('','Paiements reçus : '+money(sum(inc)),...inc.map(p=>'• '+(find(s,'clients',p.clientId)?.name||'Client')+' : '+money(p.amount)+(p.method?' ('+p.method+')':'')));L.push('','Disponible en caisse : '+money(totals(s).balance));if(over.sites.length||over.boxes.length)L.push('','⚠ À surveiller :',...over.sites.map(x=>'• '+x.project.name+' : budget dépassé de '+money(x.over)),...over.boxes.map(x=>'• '+x.account.name+' : '+money(x.balance)));return L.join('\n');}

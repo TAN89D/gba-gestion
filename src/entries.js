@@ -53,10 +53,10 @@ export function entryToAction(entry) {
   const { data } = entry;
   if (entry.kind === 'expense') {
     const scope = ['Entreprise', 'Personnel'].includes(data.scope) ? data.scope : 'Chantier';
-    return { type: 'save', table: 'expenses', data: { id: entry.id, scope, projectId: scope === 'Chantier' ? entry.projectId : '', accountId: entry.accountId, description: data.description, amount: data.amount, category: data.category, method: data.method, date: data.date, notes: 'Saisi par ' + entry.userName, enteredBy: entry.userName } };
+    return { type: 'save', table: 'expenses', data: { id: entry.id, scope, projectId: scope === 'Chantier' ? entry.projectId : '', accountId: entry.accountId, description: data.description, amount: data.amount, category: data.category, method: data.method, ...(data.reference ? { reference: data.reference } : {}), date: data.date, notes: 'Saisi par ' + entry.userName, enteredBy: entry.userName } };
   }
   if (entry.kind === 'teamPayment') {
-    return { type: 'teamPayment', data: { id: entry.id, taskId: data.taskId, accountId: entry.accountId, amount: data.amount, method: data.method, date: data.date, enteredBy: entry.userName } };
+    return { type: 'teamPayment', data: { id: entry.id, taskId: data.taskId, accountId: entry.accountId, amount: data.amount, method: data.method, ...(data.reference ? { reference: data.reference } : {}), date: data.date, enteredBy: entry.userName } };
   }
   return null;
 }

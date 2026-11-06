@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Camera, ArrowLeft, FileText } from '@phosphor-icons/react';
 import { api } from './team.jsx';
-import { fmtDate, money, today, uid, EXPENSE_CATEGORIES } from './domain.js';
+import { fmtDate, money, today, uid, EXPENSE_CATEGORIES, PAY_METHODS } from './domain.js';
 import { ENTRY_LABELS, STATUS_LABELS } from './entries.js';
 import { reportHtml } from './report.js';
 import { Thread } from './requests.jsx';
@@ -54,7 +54,7 @@ export function EntryForm({ action, data, onDone, onCancel }) {
     setBusy(true); setError('');
     try {
       // Le même identifiant est réutilisé si l'on renvoie : jamais de doublon.
-      await api('/api/entries', { method: 'POST', body: { kind, projectId, id: form.id, date: form.date, description: form.description, amount: form.amount === '' ? undefined : Number(form.amount), scope: form.scope, accountId: form.accountId || undefined, category: form.category, method: form.method, taskId: form.taskId, note: form.note, type: type === 'need' ? 'Besoin de matériel' : 'Problème', photo: photo || undefined } });
+      await api('/api/entries', { method: 'POST', body: { kind, projectId, id: form.id, date: form.date, description: form.description, amount: form.amount === '' ? undefined : Number(form.amount), scope: form.scope, accountId: form.accountId || undefined, category: form.category, method: form.method, reference: form.reference || undefined, taskId: form.taskId, note: form.note, type: type === 'need' ? 'Besoin de matériel' : 'Problème', photo: photo || undefined } });
     } catch (x) {
       setError(x.status === 0 ? 'Pas de réseau : l’envoi n’a pas pu être confirmé. Touchez « Envoyer » à nouveau quand la connexion revient : il ne sera pas compté deux fois.' : x.message);
       setBusy(false);
@@ -71,7 +71,7 @@ export function EntryForm({ action, data, onDone, onCancel }) {
     {['expense', 'teamPayment'].includes(kind) && boxes.length > 1 && <label>Caisse utilisée<select value={form.accountId} onChange={(e) => set('accountId', e.target.value)}>{boxes.map((b) => <option key={b.id} value={b.id}>{b.name} · reste {money(b.balance)}</option>)}</select></label>}
     {['expense', 'teamPayment'].includes(kind) && boxes.length === 1 && <p className="subtle">L’argent sort de votre caisse « {boxes[0].name} » (reste {money(boxes[0].balance)}).</p>}
     {kind === 'teamPayment' && <><label>Tâche et ouvrier<select required value={form.taskId} onChange={(e) => set('taskId', e.target.value)}><option value="">Choisir…</option>{siteTasks.map((t) => <option key={t.id} value={t.id} disabled={left(t) <= 0}>{t.description} · {data.employees?.find((x) => x.id === t.employeeId)?.name || ''} · reste {money(left(t))}</option>)}</select></label>{projectId && !siteTasks.length && <p className="info">Aucune tâche sur ce chantier. La direction doit d’abord la créer.</p>}<label>Montant versé (F)<input required inputMode="numeric" type="number" min="1" step="1" value={form.amount} onChange={(e) => set('amount', e.target.value)} /></label></>}
-    {['expense', 'teamPayment'].includes(kind) && <><label>Mode de paiement<select value={form.method} onChange={(e) => set('method', e.target.value)}>{['Espèces', 'Virement', 'Orange Money', 'Moov Money', 'Chèque'].map((x) => <option key={x}>{x}</option>)}</select></label><label>Date<input required type="date" value={form.date} onChange={(e) => set('date', e.target.value)} /></label></>}
+    {['expense', 'teamPayment'].includes(kind) && <><label>Mode de paiement<select value={form.method} onChange={(e) => set('method', e.target.value)}>{PAY_METHODS.map((x) => <option key={x}>{x}</option>)}</select></label>{form.method !== 'Espèces' && <label>Référence du paiement (facultatif)<input maxLength="60" value={form.reference || ''} onChange={(e) => set('reference', e.target.value)} /></label>}<label>Date<input required type="date" value={form.date} onChange={(e) => set('date', e.target.value)} /></label></>}
     {kind === 'incident' && <label>{type === 'need' ? 'De quoi avez-vous besoin ?' : 'Que se passe-t-il ?'}<textarea required rows="4" maxLength="2000" value={form.note} onChange={(e) => set('note', e.target.value)} /></label>}
     {kind === 'photo' && <label>Note (facultatif)<input maxLength="500" value={form.note} onChange={(e) => set('note', e.target.value)} /></label>}
     <label className="member-photo-pick"><Camera size={26} /> {photo ? 'Changer la photo' : type === 'scan' ? 'Prendre la facture en photo' : needsPhoto ? 'Prendre une photo' : 'Ajouter une photo (facultatif)'}<input className="file-input" type="file" accept="image/*" capture="environment" onChange={pick} /></label>

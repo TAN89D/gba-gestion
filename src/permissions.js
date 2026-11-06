@@ -26,7 +26,7 @@ export const ROLES = {
 const pick = (row, keys) => Object.fromEntries(keys.filter((k) => k in row).map((k) => [k, row[k]]));
 const live = (rows) => rows.filter((x) => !x.void);
 
-const PROJECT_BASE = ['id', 'name', 'address', 'status', 'startDate', 'expectedEndDate'];
+const PROJECT_BASE = ['id', 'name', 'address', 'status', 'startDate', 'expectedEndDate', 'progress'];
 const FIELDS = {
   employees: ['id', 'name', 'phone', 'role', 'specialty'],
   suppliers: ['id', 'name', 'phone', 'email', 'address'],

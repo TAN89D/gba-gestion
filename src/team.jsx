@@ -1,12 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import qrcode from 'qrcode-generator';
-import { HardHat, ListChecks, Notebook, Receipt, Package, SignOut, Backspace, GoogleLogo, UserPlus, QrCode, House, Users, CheckCircle, Warning, Camera, Plus, Money, ArrowLeft, Wallet } from '@phosphor-icons/react';
+import { HardHat, ListChecks, Notebook, Receipt, Package, SignOut, Backspace, GoogleLogo, UserPlus, QrCode, House, Users, CheckCircle, Warning, Camera, Plus, Money, ArrowLeft, Wallet, MapPin, HandWaving } from '@phosphor-icons/react';
 import { ROLES } from './permissions.js';
 import { money, fmtDate } from './domain.js';
 import { readSync, counts, transferAll } from './sync.js';
 import { reservedOn } from './entries.js';
 import { EntryForm, FORM_TITLES, MyEntries, PhotoGrid, ReportButton } from './entries.jsx';
 import { RequestForm, RequestList, CashTab } from './requests.jsx';
+import { BRAND, DEMO } from './brand.js';
+import { leaveDemo } from './demo.jsx';
 import './team.css';
 
 const DEVICE_KEY = 'gba-device';
@@ -35,7 +37,7 @@ const read = (key) => { try { return localStorage.getItem(key); } catch { return
 const hasOwnerData = () => !!read(OWNER_DATA_KEY);
 
 function Brand({ title, subtitle }) {
-  return <div className="member-brand"><img src="/logo.jpg" alt="GBA" /><div><h1>{title}</h1>{subtitle && <small>{subtitle}</small>}</div></div>;
+  return <div className="member-brand"><img src={BRAND.logo} alt={BRAND.alt} /><div><h1>{title}</h1>{subtitle && <small>{subtitle}</small>}</div></div>;
 }
 function GoogleButton() {
   return <a className="primary wide" href="/api/auth/google/start"><GoogleLogo size={22} /> Continuer avec Google</a>;
@@ -74,7 +76,7 @@ export function JoinScreen({ token, onJoined }) {
     api('/api/auth/invite/info', { method: 'POST', body: { token } }).then(setInfo).catch((e) => setError(e.message));
   }, []);
   if (blocked) {
-    return <main className="member-screen"><Brand title="GBA Gestion" /><p className="error">Cet appareil contient déjà les données de la direction. Ouvrez cette invitation sur le téléphone de la personne invitée.</p></main>;
+    return <main className="member-screen"><Brand title={BRAND.name} /><p className="error">Cet appareil contient déjà les données de la direction. Ouvrez cette invitation sur le téléphone de la personne invitée.</p></main>;
   }
   const finish = async (pin) => {
     if (!first) { setFirst(pin); setError(''); return; }
@@ -89,7 +91,7 @@ export function JoinScreen({ token, onJoined }) {
   };
   return (
     <main className="member-screen">
-      <Brand title={info ? 'Bienvenue ' + info.name : 'GBA Gestion'} subtitle={info && ROLES[info.role]} />
+      <Brand title={info ? 'Bienvenue ' + info.name : BRAND.name} subtitle={info && ROLES[info.role]} />
       {!info && !error && <p>Vérification de l’invitation…</p>}
       {info && info.hasEmail && <><GoogleButton /><p style={{ textAlign: 'center' }}>ou choisissez un code :</p></>}
       {info && <PinPad key={first ? 'confirm' : 'first'} title={first ? 'Répétez le code' : 'Choisissez un code à 4 chiffres'} onDone={finish} busy={busy} error={error} />}
@@ -123,10 +125,46 @@ export function LoginScreen({ reason, onLogged }) {
   };
   return (
     <main className="member-screen">
-      <Brand title="GBA Gestion" subtitle="Espace équipe" />
+      <Brand title={BRAND.name} subtitle="Espace équipe" />
       {device ? <PinPad title="Entrez votre code" onDone={login} busy={busy} error={error} /> : <><GoogleButton />{error && <p className="error" role="alert">{error}</p>}</>}
     </main>
   );
+}
+
+// Pointage : « Je suis arrivé », avec la position du téléphone si la personne l'accepte.
+function where() {
+  return new Promise((ok) => {
+    if (!navigator.geolocation) { ok(null); return; }
+    navigator.geolocation.getCurrentPosition((p) => ok({ lat: p.coords.latitude, lng: p.coords.longitude }), () => ok(null), { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 });
+  });
+}
+const mapLink = (p) => 'https://www.openstreetmap.org/?mlat=' + p.lat + '&mlon=' + p.lng + '#map=17/' + p.lat + '/' + p.lng;
+function Presence({ user, data, onReload }) {
+  const [site, setSite] = useState(data.projects.length === 1 ? data.projects[0].id : '');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const list = data.presences || [];
+  const mine = list.filter((p) => p.userId === user.id);
+  const arrive = async () => {
+    if (!site) { setError('Choisissez le chantier.'); return; }
+    setBusy(true); setError('');
+    try {
+      const pos = await where();
+      await api('/api/presence', { method: 'POST', body: { projectId: site, ...(pos || {}) } });
+      try { await onReload(); } catch { /* affiché à la prochaine actualisation */ }
+    } catch (e) { setError(e.status === 0 ? 'Pas de réseau : réessayez dans un moment.' : e.message); } finally { setBusy(false); }
+  };
+  return <section className="presence">
+    {mine.length ? mine.map((p) => <p className="presence-done" key={p.id}><CheckCircle size={26} weight="fill" /><span>Arrivé à <b>{p.time}</b> · {nameOf(data.projects, p.projectId)}{p.lat != null ? ' · position enregistrée' : ''}</span></p>)
+      : <div className="presence-ask">
+        {data.projects.length > 1 && <select aria-label="Chantier" value={site} onChange={(e) => setSite(e.target.value)}><option value="">Sur quel chantier ?</option>{data.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>}
+        <button type="button" className="presence-btn" disabled={busy || !data.projects.length} onClick={arrive}><HandWaving size={34} />{busy ? 'Envoi…' : 'Je suis arrivé'}</button>
+        <small>L’heure est enregistrée, et la position du téléphone si vous l’acceptez.</small>
+      </div>}
+    {error && <p className="error" role="alert">{error}</p>}
+    {user.role !== 'ouvrier' && <><h2>Présents aujourd’hui ({list.length})</h2>
+      {list.length ? list.map((p) => <div className="member-card member-presence" key={p.id}><Users size={26} /><div><b>{p.userName}</b><small>{p.time} · {nameOf(data.projects, p.projectId) || 'Chantier'}</small></div>{p.lat != null && <a href={mapLink(p)} target="_blank" rel="noopener" aria-label={'Position de ' + p.userName}><MapPin size={24} /></a>}</div>) : <p className="subtle">Personne n’a encore pointé aujourd’hui.</p>}</>}
+  </section>;
 }
 
 function Card({ Icon, title, sub, tag }) {
@@ -143,8 +181,8 @@ export function MemberApp({ reason }) {
     if (!read(DEVICE_KEY)) localStorage.removeItem(MEMBER_KEY);
   };
   const reload = async () => {
-    const [ws, list, req] = await Promise.all([api('/api/workspace'), api('/api/entries'), api('/api/requests')]);
-    setData(ws.data ? { ...ws.data, entries: list.entries, requests: req.requests } : null);
+    const [ws, list, req, pres] = await Promise.all([api('/api/workspace'), api('/api/entries'), api('/api/requests'), api('/api/presence').catch(() => ({ presences: [] }))]);
+    setData(ws.data ? { ...ws.data, entries: list.entries, requests: req.requests, presences: pres.presences || [] } : null);
   };
   const refresh = async () => {
     setState('loading');
@@ -174,20 +212,21 @@ export function MemberApp({ reason }) {
       setError('');
       setState('ready');
     } catch (e) {
-      if (e.status === 401) { setState('login'); return; }
+      if (e.status === 401) { if (DEMO) { leaveDemo(); return; } setState('login'); return; }
       setError(e.message);
       setState('error');
     }
   };
   useEffect(() => { reason ? setState('login') : refresh(); }, []);
   const logout = async () => {
+    if (DEMO) { await leaveDemo(); return; }
     localStorage.setItem(LOGOUT_PENDING_KEY, '1');
     try { await finishLogout(); } catch { /* terminée au prochain retour du réseau */ }
     setUser(null); setData(null); setState('login');
   };
   if (state === 'login') return <LoginScreen reason={reason} onLogged={refresh} />;
-  if (state === 'loading') return <main className="member-screen"><Brand title="GBA Gestion" /><p>Chargement…</p></main>;
-  if (state === 'error') return <main className="member-screen"><Brand title="GBA Gestion" /><p className="error" role="alert">{error}</p><button className="primary wide" onClick={refresh}>Réessayer</button></main>;
+  if (state === 'loading') return <main className="member-screen"><Brand title={BRAND.name} /><p>Chargement…</p></main>;
+  if (state === 'error') return <main className="member-screen"><Brand title={BRAND.name} /><p className="error" role="alert">{error}</p><button className="primary wide" onClick={refresh}>Réessayer</button></main>;
   return <MemberSpace user={user} data={data} onRefresh={refresh} onReload={reload} onLogout={logout} />;
 }
 
@@ -256,6 +295,7 @@ function HomeTab({ user, data, go, openSite, doAction, onReload }) {
   </>;
   if (user.role === 'ouvrier') {
     return <>
+      <Presence user={user} data={data} onReload={onReload} />
       <div className="member-tiles">
         <Tile Icon={Money} label="Déjà payé" value={money(sumOf(data.tasks, (t) => paidOn(data, t.id)))} onClick={() => go('pay')} />
         <Tile Icon={Money} label="Reste à payer" value={money(sumOf(data.tasks, (t) => leftOn(data, t)))} onClick={() => go('pay')} />
@@ -283,6 +323,7 @@ function HomeTab({ user, data, go, openSite, doAction, onReload }) {
         <Tile Icon={Package} label="Commandes en cours" value={data.orders.filter((o) => o.status !== 'Reçu').length} onClick={() => go('orders')} />
         <CashTile data={data} go={go} />
       </div>
+      <Presence user={user} data={data} onReload={onReload} />
       <h2>Budget par chantier</h2>
       {data.projects.map((p) => {
         const used = usedOn(data, p.id);
@@ -304,6 +345,7 @@ function HomeTab({ user, data, go, openSite, doAction, onReload }) {
       <Tile Icon={Users} label="Ouvriers" value={data.employees.length} onClick={() => go('crew')} />
       <Tile Icon={Notebook} label="Notes de chantier" value={data.journal.length} onClick={() => go('journal')} />
     </div>
+    <Presence user={user} data={data} onReload={onReload} />
     <h2>Actions</h2>
     <div className="member-soons">{!!data.cashboxes?.length && <><Act Icon={Plus} label="Ajouter une dépense" onClick={() => doAction('expense')} /><Act Icon={Receipt} label="Scanner une facture" onClick={() => doAction('scan')} /></>}<Act Icon={Camera} label="Photo du chantier" onClick={() => doAction('photo')} /><Act Icon={Warning} label="Signaler un incident" onClick={() => doAction('incident')} /><Act Icon={Package} label="Demande de matériel" onClick={() => doAction('need')} /></div>
     {lists}
@@ -529,6 +571,7 @@ export function firstScreen() {
   const hash = location.hash || '';
   if (location.pathname === '/admin' || location.pathname === '/admin/') return { screen: 'admin' };
   const clean = () => history.replaceState(null, '', location.pathname);
+  if (hash.startsWith('#suivi=')) return { screen: 'client', token: decodeURIComponent(hash.slice(7)) };
   if (hash.startsWith('#invite=')) { const token = decodeURIComponent(hash.slice(8)); clean(); return { screen: 'join', token }; }
   if (hash.startsWith('#connexion-refusee=')) { const reason = hash.slice(19); clean(); return { screen: 'member', reason }; }
   if (hash === '#connecte' || hash === '#connexion') { clean(); return { screen: 'member' }; }

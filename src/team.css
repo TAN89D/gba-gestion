@@ -87,3 +87,11 @@
 .member-cash-line span{display:flex;flex-direction:column;min-width:0}
 .member-cash-line small{color:#6b7f9c;overflow-wrap:anywhere}
 .member-cash-line>b{white-space:nowrap}
+/* Pointage */
+.presence{margin:14px 0 6px}
+.presence-ask{display:grid;gap:10px}
+.presence-ask select{min-height:50px;border:1px solid #c9d6e6;border-radius:12px;padding:8px 12px;font-size:16px;background:#fff}
+.presence-btn{min-height:76px;font-size:22px;background:#16a34a;color:#fff;border:0;border-radius:16px;gap:12px}
+.presence-btn:hover{background:#12803c}
+.presence-done{display:flex;align-items:center;gap:8px;background:#e9f8ef;color:#126b36;border-radius:14px;padding:14px;margin:0;font-size:16px}
+.member-presence a{color:#0066cc;display:grid;place-items:center;min-width:44px;min-height:44px}

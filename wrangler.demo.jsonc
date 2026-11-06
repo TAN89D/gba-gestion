@@ -1,0 +1,2 @@
+// Site de démonstration SoBara : séparé de l'application réelle (autre nom, autre base de données).
+{"name":"sobara-demo","compatibility_date":"2026-10-06","main":"worker.js","assets":{"directory":"./dist-demo","binding":"ASSETS","not_found_handling":"single-page-application","run_worker_first":["/api/*"]},"d1_databases":[{"binding":"DB","database_name":"sobara-demo","database_id":"ce52e4b7-ae01-46bf-8deb-42f6acd10f68"}],"vars":{"DEMO":"1"},"triggers":{"crons":["0 3 * * *"]}}
