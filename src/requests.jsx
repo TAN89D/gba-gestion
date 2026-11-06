@@ -90,7 +90,7 @@ export function printOrder(r, data) {
   if (!win) return false;
   const rows = r.items.map((x) => `<tr><td>${esc(x.description)}</td><td>${esc(x.quantity)} ${esc(x.unit)}</td></tr>`).join('');
   win.document.write(`<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>${esc(r.orderNumber || 'Bon de commande')}</title><style>body{font-family:Arial,sans-serif;margin:32px;color:#142e53}table{width:100%;border-collapse:collapse;margin:16px 0}td,th{border:1px solid #ccd;padding:8px;text-align:left}button{padding:10px 16px;font-size:16px}@media print{button{display:none}}</style></head><body>
-<h1>${esc(data.settings?.company || 'GBA')}</h1><h2>Bon de commande ${esc(r.orderNumber)}</h2>
+<h1>${esc(data.settings?.company || '')}</h1><h2>Bon de commande ${esc(r.orderNumber)}</h2>
 <p>Chantier : <b>${esc(nameOf(data.projects, r.projectId))}</b><br>Fournisseur : <b>${esc(r.order?.supplierName)}</b>${r.order?.expectedDate ? '<br>Livraison prévue : ' + esc(fmtDate(r.order.expectedDate)) : ''}${r.order?.amount ? '<br>Montant prévu : ' + esc(money(r.order.amount)) : ''}<br>Demandé par : ${esc(r.userName)} le ${esc(fmtDate(r.createdAt))}</p>
 <table><tr><th>Matériel</th><th>Quantité</th></tr>${rows}</table>${r.note ? '<p>' + esc(r.note) + '</p>' : ''}<button id="print">Imprimer</button></body></html>`);
   win.document.close();

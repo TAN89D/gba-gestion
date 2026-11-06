@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Camera, ArrowLeft, FileText } from '@phosphor-icons/react';
+import { Camera, ArrowLeft, FileText, Microphone, Stop, Trash } from '@phosphor-icons/react';
 import { api } from './team.jsx';
 import { fmtDate, money, today, uid, EXPENSE_CATEGORIES, PAY_METHODS } from './domain.js';
 import { ENTRY_LABELS, STATUS_LABELS } from './entries.js';
@@ -31,6 +31,7 @@ export function EntryForm({ action, data, onDone, onCancel }) {
   const boxFor = (site) => (boxes.find((b) => b.projectId === site) || boxes[0])?.id || '';
   const [form, setForm] = useState({ id: uid(), date: today(), description: '', amount: '', scope: 'Chantier', accountId: boxFor(initial), category: 'Matériaux', method: 'Espèces', taskId: '', note: type === 'done' ? 'Travail fait' : '' });
   const [photo, setPhoto] = useState('');
+  const [audio, setAudio] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
@@ -50,11 +51,12 @@ export function EntryForm({ action, data, onDone, onCancel }) {
   const submit = async (e) => {
     e.preventDefault();
     if (needsPhoto && !photo) { setError('Ajoutez une photo.'); return; }
+    if (kind === 'incident' && !form.note.trim() && !audio) { setError('Écrivez le problème ou enregistrez un message vocal.'); return; }
     if (!projectId) { setError('Choisissez un chantier.'); return; }
     setBusy(true); setError('');
     try {
       // Le même identifiant est réutilisé si l'on renvoie : jamais de doublon.
-      await api('/api/entries', { method: 'POST', body: { kind, projectId, id: form.id, date: form.date, description: form.description, amount: form.amount === '' ? undefined : Number(form.amount), scope: form.scope, accountId: form.accountId || undefined, category: form.category, method: form.method, reference: form.reference || undefined, taskId: form.taskId, note: form.note, type: type === 'need' ? 'Besoin de matériel' : 'Problème', photo: photo || undefined } });
+      await api('/api/entries', { method: 'POST', body: { kind, projectId, id: form.id, date: form.date, description: form.description, amount: form.amount === '' ? undefined : Number(form.amount), scope: form.scope, accountId: form.accountId || undefined, category: form.category, method: form.method, reference: form.reference || undefined, taskId: form.taskId, note: form.note, type: type === 'need' ? 'Besoin de matériel' : 'Problème', photo: photo || undefined, audio: kind === 'incident' && audio ? audio : undefined } });
     } catch (x) {
       setError(x.status === 0 ? 'Pas de réseau : l’envoi n’a pas pu être confirmé. Touchez « Envoyer » à nouveau quand la connexion revient : il ne sera pas compté deux fois.' : x.message);
       setBusy(false);
@@ -72,7 +74,8 @@ export function EntryForm({ action, data, onDone, onCancel }) {
     {['expense', 'teamPayment'].includes(kind) && boxes.length === 1 && <p className="subtle">L’argent sort de votre caisse « {boxes[0].name} » (reste {money(boxes[0].balance)}).</p>}
     {kind === 'teamPayment' && <><label>Tâche et ouvrier<select required value={form.taskId} onChange={(e) => set('taskId', e.target.value)}><option value="">Choisir…</option>{siteTasks.map((t) => <option key={t.id} value={t.id} disabled={left(t) <= 0}>{t.description} · {data.employees?.find((x) => x.id === t.employeeId)?.name || ''} · reste {money(left(t))}</option>)}</select></label>{projectId && !siteTasks.length && <p className="info">Aucune tâche sur ce chantier. La direction doit d’abord la créer.</p>}<label>Montant versé (F)<input required inputMode="numeric" type="number" min="1" step="1" value={form.amount} onChange={(e) => set('amount', e.target.value)} /></label></>}
     {['expense', 'teamPayment'].includes(kind) && <><label>Mode de paiement<select value={form.method} onChange={(e) => set('method', e.target.value)}>{PAY_METHODS.map((x) => <option key={x}>{x}</option>)}</select></label>{form.method !== 'Espèces' && <label>Référence du paiement (facultatif)<input maxLength="60" value={form.reference || ''} onChange={(e) => set('reference', e.target.value)} /></label>}<label>Date<input required type="date" value={form.date} onChange={(e) => set('date', e.target.value)} /></label></>}
-    {kind === 'incident' && <label>{type === 'need' ? 'De quoi avez-vous besoin ?' : 'Que se passe-t-il ?'}<textarea required rows="4" maxLength="2000" value={form.note} onChange={(e) => set('note', e.target.value)} /></label>}
+    {kind === 'incident' && <Recorder value={audio} onChange={setAudio} />}
+    {kind === 'incident' && <label>{type === 'need' ? 'De quoi avez-vous besoin ?' : 'Que se passe-t-il ?'}{audio ? ' (facultatif)' : ''}<textarea required={!audio} rows="4" maxLength="2000" value={form.note} onChange={(e) => set('note', e.target.value)} /></label>}
     {kind === 'photo' && <label>Note (facultatif)<input maxLength="500" value={form.note} onChange={(e) => set('note', e.target.value)} /></label>}
     <label className="member-photo-pick"><Camera size={26} /> {photo ? 'Changer la photo' : type === 'scan' ? 'Prendre la facture en photo' : needsPhoto ? 'Prendre une photo' : 'Ajouter une photo (facultatif)'}<input className="file-input" type="file" accept="image/*" capture="environment" onChange={pick} /></label>
     {photo && <img className="member-preview" src={photo} alt="Aperçu" />}
@@ -80,6 +83,52 @@ export function EntryForm({ action, data, onDone, onCancel }) {
     {error && <p className="error" role="alert">{error}</p>}
     <button className="primary wide" type="submit" disabled={busy}>{busy ? 'Envoi…' : 'Envoyer'}</button>
   </form>;
+}
+// Message vocal : on parle au lieu d'écrire (une minute au maximum).
+const MAX_SECONDS = 60;
+export function Recorder({ value, onChange }) {
+  const [rec, setRec] = useState(null);
+  const [seconds, setSeconds] = useState(0);
+  const [error, setError] = useState('');
+  useEffect(() => () => { if (rec) { clearInterval(rec.timer); rec.stream.getTracks().forEach((t) => t.stop()); } }, [rec]);
+  const start = async () => {
+    setError('');
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') { setError('Ce téléphone ne permet pas d’enregistrer ici. Écrivez le message.'); return; }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const type = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/ogg;codecs=opus'].find((t) => MediaRecorder.isTypeSupported?.(t)) || '';
+      const recorder = new MediaRecorder(stream, { ...(type ? { mimeType: type } : {}), audioBitsPerSecond: 24000 });
+      const chunks = [];
+      recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+      recorder.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop());
+        const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+        const reader = new FileReader();
+        reader.onload = () => { if (String(reader.result).length > 880000) setError('Message trop long : une minute au maximum.'); else onChange(String(reader.result)); };
+        reader.readAsDataURL(blob);
+      };
+      recorder.start();
+      const began = Date.now();
+      const timer = setInterval(() => { const n = Math.round((Date.now() - began) / 1000); setSeconds(n); if (n >= MAX_SECONDS) { clearInterval(timer); recorder.stop(); setRec(null); } }, 500);
+      setSeconds(0);
+      setRec({ recorder, stream, timer });
+    } catch { setError('Micro refusé. Autorisez le micro pour ce site, ou écrivez le message.'); }
+  };
+  const stop = () => { if (!rec) return; clearInterval(rec.timer); rec.recorder.stop(); setRec(null); };
+  return <div className="recorder">
+    {rec ? <button type="button" className="rec-btn on" onClick={stop}><Stop size={28} weight="fill" /> Arrêter ({seconds} s)</button>
+      : value ? <div className="rec-done"><audio controls src={value} /><button type="button" className="icon danger" aria-label="Effacer le message vocal" onClick={() => onChange('')}><Trash /></button></div>
+        : <button type="button" className="rec-btn" onClick={start}><Microphone size={28} weight="fill" /> Parler au lieu d’écrire</button>}
+    {error && <p className="error" role="alert">{error}</p>}
+  </div>;
+}
+export function AudioView({ id }) {
+  const [src, setSrc] = useState('');
+  const [state, setState] = useState('idle');
+  const load = async () => { setState('loading'); try { const r = await api(`/api/entries/${id}/audio`); const [head, b64] = r.audio.split(','); const bin = atob(b64); const bytes = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i); const b = new Blob([bytes], { type: head.slice(5).split(';')[0] }); setSrc(URL.createObjectURL(b)); setState('ready'); } catch { setState('error'); } };
+  useEffect(() => () => { if (src) URL.revokeObjectURL(src); }, [src]);
+  if (state === 'ready') return <audio className="entry-audio" controls autoPlay src={src} />;
+  return <button type="button" className="secondary" disabled={state === 'loading'} onClick={load}><Microphone size={20} /> {state === 'error' ? 'Message vocal indisponible' : state === 'loading' ? 'Chargement…' : 'Écouter le message vocal'}</button>;
 }
 export function PhotoView({ id, alt }) {
   const [src, setSrc] = useState('');
@@ -116,5 +165,5 @@ export function ReportButton({ company, project, data, entries, finance }) {
 export function MyEntries({ entries, title = 'Mes saisies et le suivi' }) {
   const rows = entries.filter((e) => e.kind !== 'photo');
   if (!rows.length) return null;
-  return <section><h2>{title}</h2>{rows.slice(0, 30).map((e) => <div className="member-card member-budget" key={e.id}><div><b>{e.data.description || e.data.note || ENTRY_LABELS[e.kind]}</b><small>{ENTRY_LABELS[e.kind]} · {fmtDate(e.data.date)} · {e.userName}{e.data.amount ? ' · ' + money(e.data.amount) : ''}</small><div><span className={'member-tag' + (e.status === 'rejected' ? ' member-tag-bad' : '')}>{e.status === 'open' && e.messages > 0 ? 'En cours' : STATUS_LABELS[e.status]}</span></div>{e.reason && <small>{e.kind === 'incident' ? 'Réponse : ' : 'Motif : '}{e.reason}</small>}{e.kind === 'incident' && <Thread id={e.id} count={e.messages} />}</div></div>)}</section>;
+  return <section><h2>{title}</h2>{rows.slice(0, 30).map((e) => <div className="member-card member-budget" key={e.id}><div><b>{e.data.description || e.data.note || ENTRY_LABELS[e.kind]}</b><small>{ENTRY_LABELS[e.kind]} · {fmtDate(e.data.date)} · {e.userName}{e.data.amount ? ' · ' + money(e.data.amount) : ''}</small><div><span className={'member-tag' + (e.status === 'rejected' ? ' member-tag-bad' : '')}>{e.status === 'open' && e.messages > 0 ? 'En cours' : STATUS_LABELS[e.status]}</span></div>{e.hasAudio && <AudioView id={e.id} />}{e.reason && <small>{e.kind === 'incident' ? 'Réponse : ' : 'Motif : '}{e.reason}</small>}{e.kind === 'incident' && <Thread id={e.id} count={e.messages} />}</div></div>)}</section>;
 }

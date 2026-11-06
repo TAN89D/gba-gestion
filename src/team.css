@@ -95,3 +95,10 @@
 .presence-btn:hover{background:#12803c}
 .presence-done{display:flex;align-items:center;gap:8px;background:#e9f8ef;color:#126b36;border-radius:14px;padding:14px;margin:0;font-size:16px}
 .member-presence a{color:#0066cc;display:grid;place-items:center;min-width:44px;min-height:44px}
+/* Grandes images pour l'ouvrier */
+.member-soons.big{grid-template-columns:1fr 1fr}
+.member-soons.big .member-soon{min-height:140px;font-size:17px;border-width:2px}
+.member-soon.tone-green{color:#126b36;border-color:#a7e3c0;background:#effaf3}
+.member-soon.tone-blue{color:#0a4f99;border-color:#bfd8f5;background:#f2f8ff}
+.member-soon.tone-red{color:#b42318;border-color:#f3c2b8;background:#fff6f3}
+.member-soon.tone-orange{color:#b45309;border-color:#f8d7a8;background:#fff8ee}

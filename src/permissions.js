@@ -50,7 +50,7 @@ function blankView(state, role) {
     app: state.app,
     viewOnly: true,
     role,
-    settings: pick(state.settings || {}, ['company']),
+    settings: pick(state.settings || {}, ['company', 'logo']),
     ...Object.fromEntries(TABLES.map((t) => [t, []])),
   };
 }

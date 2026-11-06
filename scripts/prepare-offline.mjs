@@ -1,7 +1,7 @@
 import{readdir,writeFile}from'node:fs/promises';import{existsSync}from'node:fs';
 // Le dossier construit est « dist » pour l'application, « dist-demo » pour la démonstration.
 const dir=process.argv[2]||'dist';
-const assets=await readdir(dir+'/assets');const base=['/','/index.html','/logo.jpg','/icon-192.png','/icon-512.png','/manifest.webmanifest','/sobara-icon.svg','/sobara-192.png','/sobara-512.png','/sobara.webmanifest'].filter(p=>p==='/'||existsSync(dir+p));const paths=[...base,...assets.map(x=>'/assets/'+x)];const version='gba-'+Date.now();
+const assets=await readdir(dir+'/assets');const base=['/','/index.html','/logo.jpg','/icon-192.png','/icon-512.png','/manifest.webmanifest','/sobara-icon.svg','/sobara-192.png','/sobara-512.png','/sobara.webmanifest','/sobara-app.webmanifest'].filter(p=>p==='/'||existsSync(dir+p));const paths=[...base,...assets.map(x=>'/assets/'+x)];const version='gba-'+Date.now();
 await writeFile(dir+'/sw.js',`const CACHE=${JSON.stringify(version)},FILES=${JSON.stringify(paths)};
 self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(FILES))));
 self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k.startsWith('gba-')&&k!==CACHE).map(k=>caches.delete(k))))));

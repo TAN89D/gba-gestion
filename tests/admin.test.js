@@ -88,7 +88,7 @@ test('tableau de bord : base vide sans erreur', () => {
 const KEY = 'cle-de-test-avec-plus-de-trente-deux-caracteres';
 function makeEnv(extra = {}) {
   const db = new DatabaseSync(':memory:');
-  for (const f of ['0001_workspace.sql', '0002_team.sql']) db.exec(readFileSync(new URL('../migrations/' + f, import.meta.url), 'utf8'));
+  for (const f of ['0001_workspace.sql', '0002_team.sql', '0003_entries.sql', '0004_requests.sql', '0005_presence.sql', '0006_companies.sql']) db.exec(readFileSync(new URL('../migrations/' + f, import.meta.url), 'utf8'));
   const wrap = (sql, args = []) => ({
     bind: (...a) => wrap(sql, a),
     first: async () => db.prepare(sql).get(...args) ?? null,
@@ -105,9 +105,9 @@ async function raw(env, method, path, body, cookie, extra = {}) {
 }
 test('configuration publique : seulement savoir si Google est actif', async () => {
   const off = await (await raw(makeEnv(), 'GET', '/api/config')).json();
-  assert.deepEqual(off, { google: false });
+  assert.deepEqual(off, { google: false, signup: false });
   const on = await (await raw(makeEnv({ GOOGLE_CLIENT_ID: 'id', GOOGLE_CLIENT_SECRET: 'secret-tres-prive' }), 'GET', '/api/config')).text();
-  assert.equal(on, '{"google":true}');
+  assert.equal(on, '{"google":true,"signup":false}');
 });
 test('la direction ne peut pas se retirer elle-même, même avec un second compte', async () => {
   const env = makeEnv();

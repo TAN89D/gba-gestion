@@ -1,8 +1,10 @@
-import { apply, validate } from '../src/domain.js';
+import { apply, validate, blankCompany, docTotal, retained as retainedOf } from '../src/domain.js';
 import { ROLES, viewFor, canWrite, canManageTeam } from '../src/permissions.js';
 import { heldBy } from '../src/cashbox.js';
 
 const SESSION_COOKIE = 'gba_session';
+// Entreprise d'origine du site (ses données restent dans la table workspace, ligne 1).
+export const MAIN = 'main';
 const STATE_COOKIE = 'gba_google_state';
 const SESSION_SECONDS = 30 * 86400;
 const INVITE_SECONDS = 7 * 86400;
@@ -68,7 +70,7 @@ async function readJson(request) {
 }
 const publicUser = (row) => ({
   id: row.id, name: row.name, role: row.role, email: row.email || '', employeeId: row.employee_id || '',
-  projectIds: JSON.parse(row.project_ids || '[]'), active: !!row.active,
+  projectIds: JSON.parse(row.project_ids || '[]'), active: !!row.active, companyId: row.company_id || MAIN,
 });
 
 export async function startSession(env, url, userId) {
@@ -114,8 +116,8 @@ async function endAccess(env, userId) {
   await env.DB.prepare('UPDATE devices SET revoked=1 WHERE user_id=?').bind(userId).run();
   await env.DB.prepare('DELETE FROM invites WHERE user_id=? AND used_at IS NULL').bind(userId).run();
 }
-async function directionCount(env) {
-  const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE role='direction' AND active=1").first();
+async function directionCount(env, companyId) {
+  const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE role='direction' AND active=1 AND company_id=?").bind(companyId).first();
   return Number(row?.n || 0);
 }
 
@@ -123,7 +125,7 @@ async function setup(request, env, url) {
   if (!env.BACKUP_TOKEN || env.BACKUP_TOKEN.length < 32) fail(503, 'Clé privée non configurée.');
   if (!await sameSecret(request.headers.get('Authorization') || '', 'Bearer ' + env.BACKUP_TOKEN)) fail(401, 'Clé privée incorrecte.');
   const body = await readJson(request);
-  let row = await env.DB.prepare("SELECT * FROM users WHERE role='direction' AND active=1 ORDER BY created_at LIMIT 1").first();
+  let row = await env.DB.prepare("SELECT * FROM users WHERE role='direction' AND active=1 AND company_id='main' ORDER BY created_at LIMIT 1").first();
   if (!row) {
     const member = cleanMember({ name: body.name || 'Direction', role: 'direction', email: body.email });
     const id = crypto.randomUUID();
@@ -132,6 +134,31 @@ async function setup(request, env, url) {
     row = await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(id).first();
   }
   return reply({ user: publicUser(row) }, 200, [await startSession(env, url, row.id)]);
+}
+// ---- Inscription d'une nouvelle entreprise (site SoBara, variable SIGNUP = "1") ----
+// Crée l'entreprise, ses données vides, le compte de direction et le code de cet appareil.
+async function createCompany(request, env, url) {
+  if (env.SIGNUP !== '1') fail(404, 'Adresse inconnue.');
+  const body = await readJson(request);
+  const company = shortText(body.company, 80, 'Nom de l’entreprise');
+  const name = shortText(body.name, 80, 'Votre nom');
+  const phone = shortText(body.phone, 30, 'Téléphone');
+  if (!company || !name) fail(400, 'Indiquez le nom de l’entreprise et votre nom.');
+  if (!/^\d{4}$/.test(String(body.pin))) fail(400, 'Choisissez un code à 4 chiffres.');
+  const companyId = crypto.randomUUID();
+  const userId = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const data = blankCompany({ company, phone, now });
+  validate(data);
+  await env.DB.prepare('INSERT INTO companies(id,name,phone,active,created_at) VALUES(?,?,?,1,?)').bind(companyId, company, phone, now).run();
+  await env.DB.prepare('INSERT INTO workspaces(company_id,revision,payload,updated_at) VALUES(?,1,?,?)').bind(companyId, JSON.stringify(data), now).run();
+  await env.DB.prepare("INSERT INTO users(id,name,role,email,employee_id,project_ids,active,created_at,company_id) VALUES(?,?,'direction',NULL,NULL,'[]',1,?,?)").bind(userId, name, now, companyId).run();
+  const secret = randomToken();
+  const salt = randomToken();
+  await env.DB.prepare('INSERT INTO devices(id,secret_hash,user_id,pin_salt,pin_hash,created_at) VALUES(?,?,?,?,?,?)')
+    .bind(crypto.randomUUID(), await sha256(secret), userId, salt, await pinHash(String(body.pin), salt), now).run();
+  const row = await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(userId).first();
+  return reply({ deviceSecret: secret, user: publicUser(row), workspace: { revision: 1, data } }, 201, [await startSession(env, url, userId)]);
 }
 async function findInvite(env, token) {
   if (typeof token !== 'string' || !token) fail(400, 'Invitation invalide.');
@@ -221,13 +248,24 @@ async function logout(request, env, url) {
   if (token) await env.DB.prepare('DELETE FROM sessions WHERE token_hash=?').bind(await sha256(token)).run();
   return reply({ ok: true }, 200, [cookie(SESSION_COOKIE, '', url, 0)]);
 }
-async function readWorkspace(env) {
-  const row = await env.DB.prepare('SELECT revision,payload,updated_at FROM workspace WHERE id=1').first();
+async function readWorkspace(env, companyId = MAIN) {
+  const row = companyId === MAIN
+    ? await env.DB.prepare('SELECT revision,payload,updated_at FROM workspace WHERE id=1').first()
+    : await env.DB.prepare('SELECT revision,payload,updated_at FROM workspaces WHERE company_id=?').bind(companyId).first();
   return row ? { revision: row.revision, data: JSON.parse(row.payload), updatedAt: row.updated_at } : null;
+}
+// Écrit une nouvelle version des données, seulement si la version attendue est toujours la dernière.
+export async function writeWorkspace(env, companyId, revision, payload, now) {
+  const main = companyId === MAIN;
+  return revision === 0
+    ? (main ? env.DB.prepare('INSERT OR IGNORE INTO workspace(id,revision,payload,updated_at) VALUES(1,1,?,?)').bind(payload, now)
+      : env.DB.prepare('INSERT OR IGNORE INTO workspaces(company_id,revision,payload,updated_at) VALUES(?,1,?,?)').bind(companyId, payload, now)).run()
+    : (main ? env.DB.prepare('UPDATE workspace SET revision=revision+1,payload=?,updated_at=? WHERE id=1 AND revision=?').bind(payload, now, revision)
+      : env.DB.prepare('UPDATE workspaces SET revision=revision+1,payload=?,updated_at=? WHERE company_id=? AND revision=?').bind(payload, now, companyId, revision)).run();
 }
 async function workspace(request, env) {
   const user = await requireUser(request, env);
-  const current = await readWorkspace(env);
+  const current = await readWorkspace(env, user.companyId);
   if (!current) return reply({ revision: 0, data: null });
   return reply({ revision: current.revision, data: viewFor(current.data, user), updatedAt: current.updatedAt });
 }
@@ -249,17 +287,16 @@ export function keepAttachments(data, existingPayload) {
   return { ...data, attachments: kept };
 }
 async function importWorkspace(request, env) {
-  await requireManager(request, env);
+  const user = await requireManager(request, env);
   const { revision, data, attachmentsOmitted } = await readJson(request);
   if (!Number.isInteger(revision) || revision < 0) fail(400, 'Révision invalide.');
   if (data?.demo === true) fail(400, 'Les données de démonstration ne peuvent pas remplacer la base commune.');
   try { validate(data); } catch (e) { fail(400, e.message || 'Données invalides.'); }
-  const previous = attachmentsOmitted === true ? await env.DB.prepare('SELECT payload FROM workspace WHERE id=1 AND revision=?').bind(revision).first() : null;
-  const payload = JSON.stringify(previous ? keepAttachments(data, previous.payload) : data);
+  const existing = attachmentsOmitted === true ? await readWorkspace(env, user.companyId) : null;
+  const previous = existing && existing.revision === revision ? JSON.stringify(existing.data) : null;
+  const payload = JSON.stringify(previous ? keepAttachments(data, previous) : data);
   const now = new Date().toISOString();
-  const saved = revision === 0
-    ? await env.DB.prepare('INSERT OR IGNORE INTO workspace(id,revision,payload,updated_at) VALUES(1,1,?,?)').bind(payload, now).run()
-    : await env.DB.prepare('UPDATE workspace SET revision=revision+1,payload=?,updated_at=? WHERE id=1 AND revision=?').bind(payload, now, revision).run();
+  const saved = await writeWorkspace(env, user.companyId, revision, payload, now);
   if (saved.meta.changes !== 1) fail(409, 'Une autre version existe sur le serveur.');
   return reply({ revision: revision + 1, updatedAt: now });
 }
@@ -269,7 +306,7 @@ async function action(request, env) {
   const body = await readJson(request);
   if (!body.action || typeof body.action !== 'object') fail(400, 'Action invalide.');
   for (let attempt = 0; attempt < 3; attempt++) {
-    const current = await readWorkspace(env);
+    const current = await readWorkspace(env, user.companyId);
     if (!current) fail(409, 'Transférez d’abord les données vers le serveur.');
     let next;
     try {
@@ -278,29 +315,28 @@ async function action(request, env) {
       validate(next);
     } catch (e) { fail(400, e.message || 'Action refusée.'); }
     const now = new Date().toISOString();
-    const saved = await env.DB.prepare('UPDATE workspace SET revision=revision+1,payload=?,updated_at=? WHERE id=1 AND revision=?')
-      .bind(JSON.stringify(next), now, current.revision).run();
+    const saved = await writeWorkspace(env, user.companyId, current.revision, JSON.stringify(next), now);
     if (saved.meta.changes === 1) return reply({ revision: current.revision + 1, updatedAt: now });
   }
   fail(409, 'Trop de modifications simultanées. Réessayez.');
 }
 async function listUsers(request, env) {
-  await requireManager(request, env);
+  const me = await requireManager(request, env);
   const { results } = await env.DB.prepare(
     `SELECT u.*,
        (SELECT COUNT(*) FROM devices d WHERE d.user_id=u.id AND d.revoked=0) AS device_count,
        (SELECT COUNT(*) FROM sessions s WHERE s.user_id=u.id AND s.expires_at>?) AS session_count
-     FROM users u ORDER BY u.created_at`,
-  ).bind(nowSeconds()).all();
+     FROM users u WHERE u.company_id=? ORDER BY u.created_at`,
+  ).bind(nowSeconds(), me.companyId).all();
   return reply({ users: results.map((row) => ({ ...publicUser(row), devices: Number(row.device_count), sessions: Number(row.session_count) })) });
 }
 async function createUser(request, env) {
-  await requireManager(request, env);
+  const me = await requireManager(request, env);
   const member = cleanMember(await readJson(request));
   const id = crypto.randomUUID();
   try {
-    await env.DB.prepare('INSERT INTO users(id,name,role,email,employee_id,project_ids,active,created_at) VALUES(?,?,?,?,?,?,1,?)')
-      .bind(id, member.name, member.role, member.email, member.employeeId, JSON.stringify(member.projectIds), new Date().toISOString()).run();
+    await env.DB.prepare('INSERT INTO users(id,name,role,email,employee_id,project_ids,active,created_at,company_id) VALUES(?,?,?,?,?,?,1,?,?)')
+      .bind(id, member.name, member.role, member.email, member.employeeId, JSON.stringify(member.projectIds), new Date().toISOString(), me.companyId).run();
   } catch (e) {
     if (String(e.message).includes('UNIQUE')) fail(409, 'Cette adresse e-mail est déjà utilisée.');
     throw e;
@@ -310,14 +346,14 @@ async function createUser(request, env) {
 }
 async function updateUser(request, env, id) {
   const requester = await requireManager(request, env);
-  const row = await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(id).first();
+  const row = await env.DB.prepare('SELECT * FROM users WHERE id=? AND company_id=?').bind(id, requester.companyId).first();
   if (!row) fail(404, 'Compte introuvable.');
   const body = await readJson(request);
   const member = cleanMember(body, publicUser(row));
   const active = body.active === undefined ? !!row.active : body.active === true;
   if (requester.id === id && (member.role !== row.role || !active)) fail(409, 'Vous ne pouvez pas retirer votre propre accès de direction.');
   const losesDirection = row.role === 'direction' && row.active && (member.role !== 'direction' || !active);
-  if (losesDirection && await directionCount(env) <= 1) fail(409, 'Gardez au moins un compte de direction actif.');
+  if (losesDirection && await directionCount(env, requester.companyId) <= 1) fail(409, 'Gardez au moins un compte de direction actif.');
   try {
     await env.DB.prepare('UPDATE users SET name=?,role=?,email=?,employee_id=?,project_ids=?,active=? WHERE id=?')
       .bind(member.name, member.role, member.email, member.employeeId, JSON.stringify(member.projectIds), active ? 1 : 0, id).run();
@@ -330,8 +366,8 @@ async function updateUser(request, env, id) {
   return reply({ user: publicUser(updated) });
 }
 async function createInvite(request, env, id) {
-  await requireManager(request, env);
-  const row = await env.DB.prepare('SELECT * FROM users WHERE id=? AND active=1').bind(id).first();
+  const me = await requireManager(request, env);
+  const row = await env.DB.prepare('SELECT * FROM users WHERE id=? AND active=1 AND company_id=?').bind(id, me.companyId).first();
   if (!row) fail(404, 'Compte introuvable ou désactivé.');
   await env.DB.prepare('DELETE FROM invites WHERE user_id=? AND used_at IS NULL').bind(id).run();
   const token = randomToken();
@@ -343,6 +379,9 @@ async function createInvite(request, env, id) {
 // ---- Saisies de l'équipe : dépenses et paiements à valider, incidents, photos de chantier ----
 const ENTRY_KINDS = { direction: ['expense', 'teamPayment', 'incident', 'photo'], gestionnaire: ['expense', 'teamPayment', 'incident', 'photo'], chef: ['expense', 'incident', 'photo'], ouvrier: ['incident', 'photo'] };
 const PHOTO_LIMIT = 1500000;
+// Message vocal : environ une minute au format compressé du téléphone.
+const AUDIO_LIMIT = 900000;
+const AUDIO_FORMAT = /^data:audio\/(webm|ogg|mp4|mpeg|aac|x-m4a)(;[\w=.-]+)*;base64,[A-Za-z0-9+/=]+$/;
 const MONEY_KINDS = ['expense', 'teamPayment'];
 const seesMoney = (user) => ['direction', 'gestionnaire'].includes(user.role);
 const shortText = (value, max, label) => {
@@ -364,18 +403,18 @@ const validDate = (value) => {
 };
 const publicEntry = (row) => ({
   id: row.id, kind: row.kind, projectId: row.project_id, userName: row.user_name, data: JSON.parse(row.data), status: row.status,
-  accountId: row.account_id || '', reason: row.reason || '', createdAt: row.created_at, decidedAt: row.decided_at || '', appliedAt: row.applied_at || '', applyError: row.apply_error || '', hasPhoto: !!row.has_photo, messages: Number(row.messages || 0),
+  accountId: row.account_id || '', reason: row.reason || '', createdAt: row.created_at, decidedAt: row.decided_at || '', appliedAt: row.applied_at || '', applyError: row.apply_error || '', hasPhoto: !!row.has_photo, hasAudio: !!row.has_audio, messages: Number(row.messages || 0),
 });
-const ENTRY_COLUMNS = 'id,kind,project_id,user_id,user_name,data,status,account_id,reason,created_at,decided_at,applied_at,apply_error,photo IS NOT NULL AS has_photo,(SELECT COUNT(*) FROM messages m WHERE m.thread_id=entries.id) AS messages';
+const ENTRY_COLUMNS = 'id,kind,project_id,user_id,user_name,data,status,account_id,reason,created_at,decided_at,applied_at,apply_error,company_id,photo IS NOT NULL AS has_photo,audio IS NOT NULL AS has_audio,(SELECT COUNT(*) FROM messages m WHERE m.thread_id=entries.id) AS messages';
 async function visibleProjects(env, user) {
-  const current = await readWorkspace(env);
+  const current = await readWorkspace(env, user.companyId);
   if (!current) return { current: null, ids: new Set() };
   return { current, ids: new Set(viewFor(current.data, user).projects.map((p) => p.id)) };
 }
 // Le chef de chantier ne voit, parmi les saisies d'argent, que les siennes (dépenses de sa caisse).
 const entryAllowed = (entry, user, ids) => (seesMoney(user) ? true : MONEY_KINDS.includes(entry.kind) ? entry.user_id === user.id : ids.has(entry.project_id));
-async function reservedOnTask(env, taskId, state) {
-  const { results } = await env.DB.prepare("SELECT id,data FROM entries WHERE kind='teamPayment' AND (status='pending' OR (status='approved' AND applied_at IS NULL))").all();
+async function reservedOnTask(env, taskId, state, companyId) {
+  const { results } = await env.DB.prepare("SELECT id,data FROM entries WHERE company_id=? AND kind='teamPayment' AND (status='pending' OR (status='approved' AND applied_at IS NULL))").bind(companyId).all();
   return results.reduce((n, row) => { const d = JSON.parse(row.data); return d.taskId === taskId && !state.teamPayments.some((p) => p.id === row.id) ? n + Number(d.amount || 0) : n; }, 0);
 }
 async function createEntry(request, env) {
@@ -385,7 +424,7 @@ async function createEntry(request, env) {
   if (typeof body.id === 'string' && /^[\w-]{8,64}$/.test(body.id)) {
     const known = await env.DB.prepare(`SELECT ${ENTRY_COLUMNS} FROM entries WHERE id=?`).bind(body.id).first();
     if (known) {
-      if (known.user_id !== user.id) fail(409, 'Identifiant déjà utilisé.');
+      if (known.user_id !== user.id || known.company_id !== user.companyId) fail(409, 'Identifiant déjà utilisé.');
       return reply({ entry: publicEntry(known) }, 200);
     }
   }
@@ -406,14 +445,21 @@ async function createEntry(request, env) {
     if (!task) fail(400, 'Choisissez une tâche de ce chantier.');
     const amount = validAmount(body.amount);
     const paid = current.data.teamPayments.filter((p) => !p.void && p.taskId === task.id).reduce((n, p) => n + Number(p.amount || 0), 0);
-    if (amount > Number(task.agreedAmount) - paid - await reservedOnTask(env, task.id, current.data)) fail(400, 'Le paiement dépasse le reste à payer de cette tâche.');
+    if (amount > Number(task.agreedAmount) - paid - await reservedOnTask(env, task.id, current.data, user.companyId)) fail(400, 'Le paiement dépasse le reste à payer de cette tâche.');
     data = { taskId: task.id, employeeId: task.employeeId, description: shortText(task.description, 300, 'Tâche'), amount, method: shortText(body.method, 40, 'Mode'), reference: shortText(body.reference, 60, 'Référence'), date };
   } else if (body.kind === 'incident') {
-    const note = shortText(body.note, 2000, 'Description');
-    if (!note) fail(400, 'Décrivez le problème.');
+    const note = shortText(body.note, 2000, 'Description') || (body.audio ? 'Message vocal' : '');
+    if (!note) fail(400, 'Décrivez le problème ou enregistrez un message vocal.');
     data = { note, type: shortText(body.type, 60, 'Type') || 'Problème', date };
   } else {
     data = { note: shortText(body.note, 500, 'Note'), date };
+  }
+  let audio = null;
+  if (body.audio !== undefined && body.audio !== null && body.audio !== '') {
+    if (body.kind !== 'incident') fail(400, 'Le message vocal accompagne un signalement.');
+    if (typeof body.audio !== 'string' || !AUDIO_FORMAT.test(body.audio)) fail(400, 'Message vocal invalide.');
+    if (body.audio.length > AUDIO_LIMIT) fail(413, 'Message vocal trop long (1 minute environ au maximum).');
+    audio = body.audio;
   }
   let photo = null;
   if (body.photo !== undefined && body.photo !== null && body.photo !== '') {
@@ -434,8 +480,8 @@ async function createEntry(request, env) {
     } else if (held.length) accountId = (held.find((a) => a.projectId === body.projectId) || held[0]).id;
   }
   const status = MONEY_KINDS.includes(body.kind) ? 'pending' : body.kind === 'incident' ? 'open' : 'info';
-  const saved = await env.DB.prepare('INSERT OR IGNORE INTO entries(id,kind,project_id,user_id,user_name,data,photo,status,account_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)')
-    .bind(id, body.kind, body.projectId, user.id, user.name, JSON.stringify(data), photo, status, accountId, new Date().toISOString()).run();
+  const saved = await env.DB.prepare('INSERT OR IGNORE INTO entries(id,kind,project_id,user_id,user_name,data,photo,audio,status,account_id,created_at,company_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
+    .bind(id, body.kind, body.projectId, user.id, user.name, JSON.stringify(data), photo, audio, status, accountId, new Date().toISOString(), user.companyId).run();
   if (saved.meta.changes !== 1) {
     const existing = await env.DB.prepare('SELECT user_id FROM entries WHERE id=?').bind(id).first();
     if (existing?.user_id !== user.id) fail(409, 'Identifiant déjà utilisé.');
@@ -447,26 +493,33 @@ async function listEntries(request, env) {
   const user = await requireUser(request, env);
   const { ids } = await visibleProjects(env, user);
   // Ce qui reste à traiter est toujours renvoyé, même au-delà des 1000 dernières saisies.
-  const { results } = await env.DB.prepare(`SELECT ${ENTRY_COLUMNS} FROM entries WHERE status IN ('pending','open') OR (status='approved' AND applied_at IS NULL) OR id IN (SELECT id FROM entries ORDER BY created_at DESC LIMIT 1000) ORDER BY created_at DESC`).all();
+  const { results } = await env.DB.prepare(`SELECT ${ENTRY_COLUMNS} FROM entries WHERE company_id=? AND (status IN ('pending','open') OR (status='approved' AND applied_at IS NULL) OR id IN (SELECT id FROM entries WHERE company_id=? ORDER BY created_at DESC LIMIT 1000)) ORDER BY created_at DESC`).bind(user.companyId, user.companyId).all();
   return reply({ entries: results.filter((row) => entryAllowed(row, user, ids)).map(publicEntry) });
 }
 async function entryPhoto(request, env, id) {
   const user = await requireUser(request, env);
-  const row = await env.DB.prepare('SELECT kind,project_id,user_id,photo FROM entries WHERE id=?').bind(id).first();
+  const row = await env.DB.prepare('SELECT kind,project_id,user_id,photo,company_id FROM entries WHERE id=?').bind(id).first();
   const { ids } = await visibleProjects(env, user);
-  if (!row || !entryAllowed(row, user, ids) || !row.photo) fail(404, 'Photo introuvable.');
+  if (!row || !(row.company_id === user.companyId) || !entryAllowed(row, user, ids) || !row.photo) fail(404, 'Photo introuvable.');
   return reply({ photo: row.photo });
 }
+async function entryAudio(request, env, id) {
+  const user = await requireUser(request, env);
+  const row = await env.DB.prepare('SELECT kind,project_id,user_id,audio,company_id FROM entries WHERE id=?').bind(id).first();
+  const { ids } = await visibleProjects(env, user);
+  if (!row || !(row.company_id === user.companyId) || !entryAllowed(row, user, ids) || !row.audio) fail(404, 'Message vocal introuvable.');
+  return reply({ audio: row.audio });
+}
 async function decideEntry(request, env, id) {
-  await requireManager(request, env);
+  const user = await requireManager(request, env);
   const body = await readJson(request);
-  const row = await env.DB.prepare('SELECT kind,status,project_id,data FROM entries WHERE id=?').bind(id).first();
-  if (!row) fail(404, 'Saisie introuvable.');
+  const row = await env.DB.prepare('SELECT kind,status,project_id,data,company_id FROM entries WHERE id=?').bind(id).first();
+  if (!row || !(row.company_id === user.companyId)) fail(404, 'Saisie introuvable.');
   const now = new Date().toISOString();
   let result;
   if (body.decision === 'approve') {
     if (!MONEY_KINDS.includes(row.kind)) fail(400, 'Cette saisie ne se valide pas.');
-    const current = await readWorkspace(env);
+    const current = await readWorkspace(env, user.companyId);
     if (!current?.data.accounts.some((a) => a.id === body.accountId)) fail(400, 'Choisissez la caisse à utiliser.');
     if (row.kind === 'teamPayment') {
       const d = JSON.parse(row.data);
@@ -498,17 +551,17 @@ async function decideEntry(request, env, id) {
   return reply({ entry: publicEntry(updated) });
 }
 async function entriesToApply(request, env) {
-  await requireManager(request, env);
-  const { results } = await env.DB.prepare(`SELECT ${ENTRY_COLUMNS} FROM entries WHERE status='approved' AND applied_at IS NULL AND apply_error IS NULL ORDER BY created_at`).all();
+  const user = await requireManager(request, env);
+  const { results } = await env.DB.prepare(`SELECT ${ENTRY_COLUMNS} FROM entries WHERE company_id=? AND status='approved' AND applied_at IS NULL AND apply_error IS NULL ORDER BY created_at`).bind(user.companyId).all();
   return reply({ entries: results.map(publicEntry) });
 }
 async function markApplied(request, env, id) {
-  await requireManager(request, env);
+  const user = await requireManager(request, env);
   const body = await readJson(request);
   const error = body.error ? shortText(body.error, 300, 'Erreur') : null;
   const result = await env.DB.prepare(error
-    ? "UPDATE entries SET apply_error=? WHERE id=? AND status='approved' AND applied_at IS NULL"
-    : "UPDATE entries SET applied_at=? WHERE id=? AND status='approved' AND applied_at IS NULL").bind(error || new Date().toISOString(), id).run();
+    ? "UPDATE entries SET apply_error=? WHERE id=? AND company_id=? AND status='approved' AND applied_at IS NULL"
+    : "UPDATE entries SET applied_at=? WHERE id=? AND company_id=? AND status='approved' AND applied_at IS NULL").bind(error || new Date().toISOString(), id, user.companyId).run();
   if (result.meta.changes !== 1) fail(409, 'Saisie déjà traitée.');
   return reply({ ok: true });
 }
@@ -516,7 +569,7 @@ async function markApplied(request, env, id) {
 // ---- Demandes de matériel ----
 // besoin (ouvrier) -> demande (chef, gestionnaire) -> commande (direction : bon de commande)
 // -> livre (matériel arrivé sur le chantier) -> recu (la personne qui l'a demandé l'a reçu).
-const REQUEST_COLUMNS = 'id,project_id,user_id,user_name,items,note,status,order_data,order_number,order_applied_at,delivery_applied_at,apply_error,reason,history,created_at,updated_at,(SELECT COUNT(*) FROM messages m WHERE m.thread_id=material_requests.id) AS messages';
+const REQUEST_COLUMNS = 'id,company_id,project_id,user_id,user_name,items,note,status,order_data,order_number,order_applied_at,delivery_applied_at,apply_error,reason,history,created_at,updated_at,(SELECT COUNT(*) FROM messages m WHERE m.thread_id=material_requests.id) AS messages';
 const requestAllowed = (row, user, ids) => ['direction', 'gestionnaire'].includes(user.role) || row.user_id === user.id || (user.role === 'chef' && ids.has(row.project_id));
 const leads = (user, row, ids) => user.role === 'direction' || user.role === 'gestionnaire' || (user.role === 'chef' && ids.has(row.project_id));
 function publicRequest(row, user) {
@@ -545,7 +598,7 @@ async function createRequest(request, env) {
   if (validId) {
     const known = await env.DB.prepare(`SELECT ${REQUEST_COLUMNS} FROM material_requests WHERE id=?`).bind(body.id).first();
     if (known) {
-      if (known.user_id !== user.id) fail(409, 'Identifiant déjà utilisé.');
+      if (known.user_id !== user.id || known.company_id !== user.companyId) fail(409, 'Identifiant déjà utilisé.');
       return reply({ request: publicRequest(known, user) });
     }
   }
@@ -557,22 +610,22 @@ async function createRequest(request, env) {
   const status = user.role === 'ouvrier' ? 'besoin' : 'demande';
   const id = validId ? body.id : crypto.randomUUID();
   const history = [{ at: now, by: user.name, step: status }];
-  await env.DB.prepare('INSERT OR IGNORE INTO material_requests(id,project_id,user_id,user_name,items,note,status,history,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)')
-    .bind(id, body.projectId, user.id, user.name, JSON.stringify(items), shortText(body.note, 1000, 'Note'), status, JSON.stringify(history), now, now).run();
+  await env.DB.prepare('INSERT OR IGNORE INTO material_requests(id,project_id,user_id,user_name,items,note,status,history,created_at,updated_at,company_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
+    .bind(id, body.projectId, user.id, user.name, JSON.stringify(items), shortText(body.note, 1000, 'Note'), status, JSON.stringify(history), now, now, user.companyId).run();
   const row = await env.DB.prepare(`SELECT ${REQUEST_COLUMNS} FROM material_requests WHERE id=?`).bind(id).first();
-  if (row.user_id !== user.id) fail(409, 'Identifiant déjà utilisé.');
+  if (row.user_id !== user.id || row.company_id !== user.companyId) fail(409, 'Identifiant déjà utilisé.');
   return reply({ request: publicRequest(row, user) }, 201);
 }
 async function listRequests(request, env) {
   const user = await requireUser(request, env);
   const { ids } = await visibleProjects(env, user);
-  const { results } = await env.DB.prepare(`SELECT ${REQUEST_COLUMNS} FROM material_requests WHERE status IN ('besoin','demande','commande','livre') OR id IN (SELECT id FROM material_requests ORDER BY updated_at DESC LIMIT 300) ORDER BY updated_at DESC`).all();
+  const { results } = await env.DB.prepare(`SELECT ${REQUEST_COLUMNS} FROM material_requests WHERE company_id=? AND (status IN ('besoin','demande','commande','livre') OR id IN (SELECT id FROM material_requests WHERE company_id=? ORDER BY updated_at DESC LIMIT 300)) ORDER BY updated_at DESC`).bind(user.companyId, user.companyId).all();
   return reply({ requests: results.filter((row) => requestAllowed(row, user, ids)).map((row) => publicRequest(row, user)) });
 }
 async function stepRequest(request, env, id) {
   const user = await requireUser(request, env);
   const body = await readJson(request);
-  const row = await env.DB.prepare('SELECT * FROM material_requests WHERE id=?').bind(id).first();
+  const row = await env.DB.prepare('SELECT * FROM material_requests WHERE id=? AND company_id=?').bind(id, user.companyId).first();
   const { current, ids } = await visibleProjects(env, user);
   if (!row || !requestAllowed(row, user, ids)) fail(404, 'Demande introuvable.');
   const lead = leads(user, row, ids);
@@ -604,7 +657,7 @@ async function stepRequest(request, env, id) {
     from = ['livre']; to = 'recu';
   } else if (body.step === 'retry') {
     if (user.role !== 'direction') fail(403, 'Action non autorisée.');
-    const done = await env.DB.prepare('UPDATE material_requests SET apply_error=NULL WHERE id=? AND apply_error IS NOT NULL').bind(id).run();
+    const done = await env.DB.prepare('UPDATE material_requests SET apply_error=NULL WHERE id=? AND company_id=? AND apply_error IS NOT NULL').bind(id, user.companyId).run();
     if (done.meta.changes !== 1) fail(409, 'Rien à réessayer.');
     return reply({ ok: true });
   } else fail(400, 'Étape inconnue.');
@@ -621,16 +674,16 @@ async function stepRequest(request, env, id) {
 // Ce que le téléphone de la direction doit inscrire dans ses données : le bon de commande, puis la réception.
 async function requestsToApply(request, env) {
   const user = await requireManager(request, env);
-  const { results } = await env.DB.prepare(`SELECT ${REQUEST_COLUMNS} FROM material_requests WHERE apply_error IS NULL AND ((status IN ('commande','livre','recu') AND order_applied_at IS NULL) OR (status IN ('livre','recu') AND delivery_applied_at IS NULL)) ORDER BY updated_at`).all();
+  const { results } = await env.DB.prepare(`SELECT ${REQUEST_COLUMNS} FROM material_requests WHERE company_id=? AND apply_error IS NULL AND ((status IN ('commande','livre','recu') AND order_applied_at IS NULL) OR (status IN ('livre','recu') AND delivery_applied_at IS NULL)) ORDER BY updated_at`).bind(user.companyId).all();
   return reply({ requests: results.map((row) => ({ ...publicRequest(row, user), deliveredBy: (JSON.parse(row.history || '[]').find((h) => h.step === 'livre') || {}).by || '' })) });
 }
 async function markRequestApplied(request, env, id) {
-  await requireManager(request, env);
+  const user = await requireManager(request, env);
   const body = await readJson(request);
   let result;
-  if (body.error) result = await env.DB.prepare('UPDATE material_requests SET apply_error=? WHERE id=?').bind(shortText(body.error, 300, 'Erreur'), id).run();
-  else if (body.phase === 'order') result = await env.DB.prepare("UPDATE material_requests SET order_applied_at=?,order_number=? WHERE id=? AND order_applied_at IS NULL AND status IN ('commande','livre','recu')").bind(new Date().toISOString(), shortText(body.number, 40, 'Numéro'), id).run();
-  else if (body.phase === 'delivery') result = await env.DB.prepare("UPDATE material_requests SET delivery_applied_at=? WHERE id=? AND delivery_applied_at IS NULL AND order_applied_at IS NOT NULL AND status IN ('livre','recu')").bind(new Date().toISOString(), id).run();
+  if (body.error) result = await env.DB.prepare('UPDATE material_requests SET apply_error=? WHERE id=? AND company_id=?').bind(shortText(body.error, 300, 'Erreur'), id, user.companyId).run();
+  else if (body.phase === 'order') result = await env.DB.prepare("UPDATE material_requests SET order_applied_at=?,order_number=? WHERE id=? AND company_id=? AND order_applied_at IS NULL AND status IN ('commande','livre','recu')").bind(new Date().toISOString(), shortText(body.number, 40, 'Numéro'), id, user.companyId).run();
+  else if (body.phase === 'delivery') result = await env.DB.prepare("UPDATE material_requests SET delivery_applied_at=? WHERE id=? AND company_id=? AND delivery_applied_at IS NULL AND order_applied_at IS NOT NULL AND status IN ('livre','recu')").bind(new Date().toISOString(), id, user.companyId).run();
   else fail(400, 'Étape inconnue.');
   if (result.meta.changes !== 1) fail(409, 'Déjà enregistré.');
   return reply({ ok: true });
@@ -639,16 +692,16 @@ async function markRequestApplied(request, env, id) {
 // ---- Fil de messages (incident ou demande de matériel) ----
 async function threadAllowed(env, user, id) {
   const { ids } = await visibleProjects(env, user);
-  const entry = await env.DB.prepare('SELECT kind,project_id,user_id FROM entries WHERE id=?').bind(id).first();
+  const entry = await env.DB.prepare('SELECT kind,project_id,user_id FROM entries WHERE id=? AND company_id=?').bind(id, user.companyId).first();
   if (entry) return entryAllowed(entry, user, ids);
-  const req = await env.DB.prepare('SELECT project_id,user_id FROM material_requests WHERE id=?').bind(id).first();
+  const req = await env.DB.prepare('SELECT project_id,user_id FROM material_requests WHERE id=? AND company_id=?').bind(id, user.companyId).first();
   return !!req && requestAllowed(req, user, ids);
 }
 async function listMessages(request, env, id) {
   const user = await requireUser(request, env);
   if (!await threadAllowed(env, user, id)) fail(404, 'Discussion introuvable.');
   // Les 300 derniers messages, remis dans l'ordre chronologique.
-  const { results } = await env.DB.prepare('SELECT id,user_id,user_name,role,text,created_at FROM messages WHERE thread_id=? ORDER BY created_at DESC, rowid DESC LIMIT 300').bind(id).all();
+  const { results } = await env.DB.prepare('SELECT id,user_id,user_name,role,text,created_at FROM messages WHERE thread_id=? AND company_id=? ORDER BY created_at DESC, rowid DESC LIMIT 300').bind(id, user.companyId).all();
   return reply({ messages: results.reverse().map((m) => ({ id: m.id, userName: m.user_name, role: m.role, text: m.text, at: m.created_at, mine: m.user_id === user.id })) });
 }
 async function postMessage(request, env, id) {
@@ -658,8 +711,8 @@ async function postMessage(request, env, id) {
   const text = shortText(body.text, 1000, 'Message');
   if (!text) fail(400, 'Écrivez un message.');
   const msgId = typeof body.id === 'string' && /^[\w-]{8,64}$/.test(body.id) ? body.id : crypto.randomUUID();
-  await env.DB.prepare('INSERT OR IGNORE INTO messages(id,thread_id,user_id,user_name,role,text,created_at) VALUES(?,?,?,?,?,?,?)')
-    .bind(msgId, id, user.id, user.name, user.role, text, new Date().toISOString()).run();
+  await env.DB.prepare('INSERT OR IGNORE INTO messages(id,thread_id,user_id,user_name,role,text,created_at,company_id) VALUES(?,?,?,?,?,?,?,?)')
+    .bind(msgId, id, user.id, user.name, user.role, text, new Date().toISOString(), user.companyId).run();
   const saved = await env.DB.prepare('SELECT user_id,thread_id FROM messages WHERE id=?').bind(msgId).first();
   if (saved.user_id !== user.id || saved.thread_id !== id) fail(409, 'Identifiant déjà utilisé.');
   return reply({ ok: true }, 201);
@@ -684,15 +737,15 @@ async function createPresence(request, env) {
   let lat = null, lng = null;
   const la = Number(body.lat), lo = Number(body.lng);
   if (body.lat != null && body.lng != null && Number.isFinite(la) && Number.isFinite(lo) && Math.abs(la) <= 90 && Math.abs(lo) <= 180) { lat = Math.round(la * 100000) / 100000; lng = Math.round(lo * 100000) / 100000; }
-  await env.DB.prepare('INSERT OR IGNORE INTO presences(id,project_id,user_id,user_name,role,date,time,lat,lng,note,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
-    .bind(id, body.projectId, user.id, user.name, user.role, date, now.toISOString().slice(11, 16), lat, lng, shortText(body.note, 200, 'Note'), now.toISOString()).run();
+  await env.DB.prepare('INSERT OR IGNORE INTO presences(id,project_id,user_id,user_name,role,date,time,lat,lng,note,created_at,company_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
+    .bind(id, body.projectId, user.id, user.name, user.role, date, now.toISOString().slice(11, 16), lat, lng, shortText(body.note, 200, 'Note'), now.toISOString(), user.companyId).run();
   const row = await env.DB.prepare('SELECT * FROM presences WHERE user_id=? AND project_id=? AND date=?').bind(user.id, body.projectId, date).first();
   return reply({ presence: publicPresence(row) }, 201);
 }
 async function listPresence(request, env, url) {
   const user = await requireUser(request, env);
   const date = validDate(url.searchParams.get('date') || undefined);
-  const { results } = await env.DB.prepare('SELECT * FROM presences WHERE date=? ORDER BY time').bind(date).all();
+  const { results } = await env.DB.prepare('SELECT * FROM presences WHERE date=? AND company_id=? ORDER BY time').bind(date, user.companyId).all();
   const { ids } = await visibleProjects(env, user);
   // Direction et gestionnaire voient tout le monde ; le chef, ses chantiers ; l'ouvrier, lui-même.
   const visible = results.filter((r) => (seesMoney(user) ? true : user.role === 'chef' ? ids.has(r.project_id) : r.user_id === user.id));
@@ -709,27 +762,35 @@ export function clientView(data, token) {
   const project = data?.projects?.find((p) => p.shareToken === token && p.status !== 'Supprimé');
   if (!project) return null;
   const live = (rows) => (rows || []).filter((x) => !x.void);
-  const ht = (d) => (d.lines || []).reduce((n, l) => n + Number(l.quantity) * Number(l.unitPrice), 0) - (Number(d.discount) || 0);
-  const ttc = (d) => Math.round(ht(d) * (1 + (Number(d.tax) || 0) / 100));
+  // Mêmes calculs que l'application, pour que le client voie exactement les mêmes montants.
   const invoices = live(data.invoices).filter((i) => i.projectId === project.id);
-  const billed = invoices.reduce((n, i) => n + ttc(i), 0);
+  const billed = invoices.reduce((n, i) => n + docTotal(i), 0);
+  const retained = invoices.reduce((n, i) => n + retainedOf(i), 0);
   const paid = live(data.payments).filter((x) => invoices.some((i) => i.id === x.invoiceId)).reduce((n, x) => n + Number(x.amount || 0), 0);
   const client = data.clients.find((c) => c.id === project.clientId);
   const journal = (data.journal || []).filter((j) => j.projectId === project.id && CLIENT_NOTES.includes(j.kind)).slice(-20).reverse().map((j) => ({ date: j.date || '', kind: j.kind || 'Note', note: String(j.note || '').slice(0, 1000) }));
   const photos = (data.attachments || []).filter((a) => a.entityType === 'projects' && a.entityId === project.id && /^data:image\/(jpeg|png|webp);base64,/.test(a.url)).slice(-8).reverse().map((a) => ({ url: a.url, date: a.date || '', name: a.name || '' }));
   const s = data.settings || {};
   return {
-    company: { name: s.company || '', phone: s.phone || '', email: s.email || '' },
+    company: { name: s.company || '', phone: s.phone || '', email: s.email || '', logo: /^data:image\/(png|jpeg|webp);base64,/.test(s.logo || '') ? s.logo : '' },
     client: client?.name || '',
     project: { name: project.name, status: project.status || '', address: project.address || '', startDate: project.startDate || '', expectedEndDate: project.expectedEndDate || '', progress: Number(project.progress || 0) },
-    money: { contract: Number(project.contractAmount || 0), billed, paid, due: Math.max(0, billed - paid) },
+    money: { contract: Number(project.contractAmount || 0), billed, paid, retained, due: Math.max(0, billed - retained - paid) },
     payments: live(data.payments).filter((x) => invoices.some((i) => i.id === x.invoiceId)).slice(-10).reverse().map((x) => ({ date: x.date || '', amount: Number(x.amount || 0), method: x.method || '', number: x.number || '' })),
     journal, photos,
   };
 }
+async function findShared(env, token) {
+  if (typeof token !== 'string' || !/^[\w-]{20,64}$/.test(token)) return null;
+  const needle = '%"shareToken":"' + token.replace(/[\\%_]/g, (c) => '\\' + c) + '"%';
+  const main = await env.DB.prepare("SELECT payload FROM workspace WHERE id=1 AND payload LIKE ? ESCAPE '\\'").bind(needle).first();
+  if (main) return JSON.parse(main.payload);
+  const other = await env.DB.prepare("SELECT w.payload FROM workspaces w JOIN companies c ON c.id=w.company_id WHERE c.active=1 AND w.payload LIKE ? ESCAPE '\\' LIMIT 1").bind(needle).first();
+  return other ? JSON.parse(other.payload) : null;
+}
 async function clientFollow(env, token) {
-  const current = await readWorkspace(env);
-  const view = current && clientView(current.data, token);
+  const data = await findShared(env, token);
+  const view = data && clientView(data, token);
   if (!view) fail(404, 'Ce lien de suivi n’existe pas ou a été arrêté.');
   return reply(view);
 }
@@ -746,13 +807,14 @@ export async function handleTeam(request, env) {
   }
   try {
     if (method === 'POST' && path === '/api/setup') return await setup(request, env, url);
+    if (method === 'POST' && path === '/api/companies') return await createCompany(request, env, url);
     if (method === 'POST' && path === '/api/auth/invite/info') return await inviteInfo(request, env);
     if (method === 'POST' && path === '/api/auth/invite/redeem') return await redeemInvite(request, env, url);
     if (method === 'POST' && path === '/api/auth/pin') return await pinLogin(request, env, url);
     if (method === 'GET' && path === '/api/auth/google/start') return googleStart(env, url);
     if (method === 'GET' && path === '/api/auth/google/callback') return await googleCallback(request, env, url);
     if (method === 'POST' && path === '/api/auth/logout') return await logout(request, env, url);
-    if (method === 'GET' && path === '/api/config') return reply({ google: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) });
+    if (method === 'GET' && path === '/api/config') return reply({ google: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET), signup: env.SIGNUP === '1' });
     if (method === 'POST' && path === '/api/presence') return await createPresence(request, env);
     if (method === 'GET' && path === '/api/presence') return await listPresence(request, env, url);
     const follow = path.match(/^\/api\/suivi\/([\w-]{1,64})$/);
@@ -766,8 +828,9 @@ export async function handleTeam(request, env) {
     if (method === 'POST' && path === '/api/entries') return await createEntry(request, env);
     if (method === 'GET' && path === '/api/entries') return await listEntries(request, env);
     if (method === 'GET' && path === '/api/entries/to-apply') return await entriesToApply(request, env);
-    const entry = path.match(/^\/api\/entries\/([\w-]{1,64})\/(photo|decision|applied)$/);
+    const entry = path.match(/^\/api\/entries\/([\w-]{1,64})\/(photo|audio|decision|applied)$/);
     if (entry && method === 'GET' && entry[2] === 'photo') return await entryPhoto(request, env, entry[1]);
+    if (entry && method === 'GET' && entry[2] === 'audio') return await entryAudio(request, env, entry[1]);
     if (entry && method === 'POST' && entry[2] === 'decision') return await decideEntry(request, env, entry[1]);
     if (entry && method === 'POST' && entry[2] === 'applied') return await markApplied(request, env, entry[1]);
     if (method === 'POST' && path === '/api/requests') return await createRequest(request, env);

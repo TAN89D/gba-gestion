@@ -3,11 +3,12 @@ import qrcode from 'qrcode-generator';
 import { HardHat, ListChecks, Notebook, Receipt, Package, SignOut, Backspace, GoogleLogo, UserPlus, QrCode, House, Users, CheckCircle, Warning, Camera, Plus, Money, ArrowLeft, Wallet, MapPin, HandWaving } from '@phosphor-icons/react';
 import { ROLES } from './permissions.js';
 import { money, fmtDate } from './domain.js';
-import { readSync, counts, transferAll } from './sync.js';
+import { readSync, writeSync, counts, transferAll } from './sync.js';
 import { reservedOn } from './entries.js';
 import { EntryForm, FORM_TITLES, MyEntries, PhotoGrid, ReportButton } from './entries.jsx';
 import { RequestForm, RequestList, CashTab } from './requests.jsx';
-import { BRAND, DEMO } from './brand.js';
+import { BRAND, DEMO, SAAS, logoOf } from './brand.js';
+import { InstallCard } from './install.jsx';
 import { leaveDemo } from './demo.jsx';
 import './team.css';
 
@@ -36,8 +37,8 @@ export async function api(path, { method = 'GET', body, headers = {} } = {}) {
 const read = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
 const hasOwnerData = () => !!read(OWNER_DATA_KEY);
 
-function Brand({ title, subtitle }) {
-  return <div className="member-brand"><img src={BRAND.logo} alt={BRAND.alt} /><div><h1>{title}</h1>{subtitle && <small>{subtitle}</small>}</div></div>;
+function Brand({ title, subtitle, logo }) {
+  return <div className="member-brand"><img src={logo || BRAND.logo} alt={BRAND.alt} /><div><h1>{title}</h1>{subtitle && <small>{subtitle}</small>}</div></div>;
 }
 function GoogleButton() {
   return <a className="primary wide" href="/api/auth/google/start"><GoogleLogo size={22} /> Continuer avec Google</a>;
@@ -196,6 +197,16 @@ export function MemberApp({ reason }) {
     try {
       const me = await api('/api/me');
       if (me.user.role === 'direction') {
+        if (SAAS && !hasOwnerData()) {
+          const ws = await api('/api/workspace');
+          if (ws.data) {
+            localStorage.setItem(OWNER_DATA_KEY, JSON.stringify(ws.data));
+            writeSync({ enabled: true, revision: ws.revision, syncedAt: ws.data.updatedAt });
+            localStorage.removeItem(MEMBER_KEY);
+            location.replace('/');
+            return;
+          }
+        }
         // Un compte de direction invité ouvre le tableau de bord général, protégé par son code.
         localStorage.removeItem(MEMBER_KEY);
         location.replace('/admin');
@@ -248,8 +259,8 @@ const needsMe = (r) => r.status === 'besoin' || (r.status === 'commande' && r.or
 function Tile({ Icon, label, value, onClick, tone }) {
   return <button type="button" className={'member-tile' + (tone ? ' member-tile-' + tone : '')} onClick={onClick}><Icon size={28} /><b>{value}</b><small>{label}</small></button>;
 }
-function Act({ Icon, label, onClick }) {
-  return <button type="button" className="member-soon" onClick={onClick}><Icon size={30} /><span>{label}</span></button>;
+function Act({ Icon, label, onClick, tone }) {
+  return <button type="button" className={'member-soon' + (tone ? ' tone-' + tone : '')} onClick={onClick}><Icon size={tone ? 48 : 30} weight={tone ? 'duotone' : 'regular'} /><span>{label}</span></button>;
 }
 function Empty({ text }) { return <p className="info">{text}</p>; }
 const paidOn = (data, taskId) => data.teamPayments.filter((p) => p.taskId === taskId).reduce((n, p) => n + Number(p.amount || 0), 0);
@@ -303,7 +314,7 @@ function HomeTab({ user, data, go, openSite, doAction, onReload }) {
         <Tile Icon={HardHat} label="Mes chantiers" value={data.projects.length} onClick={() => go('projects')} />
       </div>
       <h2>Signaler</h2>
-      <div className="member-soons"><Act Icon={CheckCircle} label="Travail fait" onClick={() => doAction('done')} /><Act Icon={Camera} label="Photo du chantier" onClick={() => doAction('photo')} /><Act Icon={Warning} label="Problème" onClick={() => doAction('incident')} /><Act Icon={Package} label="Besoin de matériel" onClick={() => doAction('need')} /></div>
+      <div className="member-soons big"><Act Icon={CheckCircle} label="Travail fait" tone="green" onClick={() => doAction('done')} /><Act Icon={Camera} label="Photo du chantier" tone="blue" onClick={() => doAction('photo')} /><Act Icon={Warning} label="Problème" tone="red" onClick={() => doAction('incident')} /><Act Icon={Package} label="Besoin de matériel" tone="orange" onClick={() => doAction('need')} /></div>
       {lists}
       <MyEntries entries={data.entries || []} />
     </>;
@@ -427,7 +438,8 @@ function MemberSpace({ user, data, onRefresh, onReload, onLogout }) {
   return (
     <>
       <main className="member-screen member-with-tabs">
-        <Brand title={!action && !project && tab === 'home' ? 'Bonjour ' + user.name : title} subtitle={ROLES[user.role]} />
+        <Brand title={!action && !project && tab === 'home' ? 'Bonjour ' + user.name : title} subtitle={[ROLES[user.role], data?.settings?.company].filter(Boolean).join(' · ')} logo={data?.settings?.logo ? logoOf(data.settings) : ''} />
+        {!action && !project && tab === 'home' && <InstallCard />}
         {sent && !action && <p className="info" role="status">{sent}</p>}
         {!data && <Empty text="Les données de l’entreprise ne sont pas encore disponibles." />}
         {data && action?.type === 'need' && <RequestForm key={'need' + (action.projectId || '')} data={data} projectId={action.projectId} onCancel={() => setAction(null)} onDone={async () => { try { await onReload(); } catch { /* affiché à la prochaine actualisation */ } setAction(null); setSent(user.role === 'ouvrier' ? 'Envoyé. Votre chef de chantier va transmettre la demande.' : 'Envoyé. La direction va préparer le bon de commande.'); window.scrollTo(0, 0); }} />}
@@ -512,6 +524,11 @@ export function MemberForm({ workspace, onSaved }) {
     </form>
   );
 }
+function Reconnect({ onDone }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  return <div className="team-member"><p>Votre connexion a expiré. Entrez votre code à 4 chiffres pour reprendre l’envoi de vos données.</p><PinPad title="" busy={busy} error={error} onDone={async (pin) => { setBusy(true); setError(''); try { await api('/api/auth/pin', { method: 'POST', body: { secret: read(DEVICE_KEY), pin } }); await onDone(); } catch (e) { setError(e.message); } finally { setBusy(false); } }} /></div>;
+}
 export function TeamAdmin({ getState, backupNow, engine, syncStatus }) {
   const [status, setStatus] = useState('loading');
   const [key, setKey] = useState('');
@@ -553,7 +570,8 @@ export function TeamAdmin({ getState, backupNow, engine, syncStatus }) {
       {status === 'loading' && <p className="subtle">Vérification…</p>}
       {status === 'unavailable' && <p className="subtle">Service d’équipe indisponible pour le moment : {error}</p>}
       {status === 'forbidden' && <p className="subtle">Accès réservé à la direction.</p>}
-      {status === 'key' && <form onSubmit={openWithKey}><p className="subtle">Saisissez la clé privée Cloudflare pour ouvrir la gestion de l’équipe. Elle n’est pas conservée.</p><label>Clé privée<input type="password" autoComplete="off" value={key} onChange={(e) => setKey(e.target.value)} /></label>{error && <p className="error" role="alert">{error}</p>}<button className="secondary wide" type="submit" disabled={!key}>Ouvrir la gestion de l’équipe</button></form>}
+      {status === 'key' && SAAS && read(DEVICE_KEY) && <Reconnect onDone={load} />}
+      {status === 'key' && !(SAAS && read(DEVICE_KEY)) && <form onSubmit={openWithKey}><p className="subtle">Saisissez la clé privée Cloudflare pour ouvrir la gestion de l’équipe. Elle n’est pas conservée.</p><label>Clé privée<input type="password" autoComplete="off" value={key} onChange={(e) => setKey(e.target.value)} /></label>{error && <p className="error" role="alert">{error}</p>}<button className="secondary wide" type="submit" disabled={!key}>Ouvrir la gestion de l’équipe</button></form>}
       {status === 'ready' && <>
         <a className="secondary wide" href="/admin">Ouvrir le tableau de bord général</a>
         <TransferPanel getState={getState} backupNow={backupNow} engine={engine} syncStatus={syncStatus} onDone={load} />

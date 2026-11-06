@@ -1,3 +1,4 @@
+import {BRAND} from './brand.js';
 import React,{useState,useEffect}from'react';import{LockKey}from'@phosphor-icons/react';
 const KEY='gba-screen-lock';
 const RELOCK_AFTER=120000;
@@ -27,7 +28,7 @@ const resetCode=run(async()=>{assertNotLocked();if(!await recoveryMatches(recove
 const team=<button type="button" className="lock-link" onClick={()=>{location.hash='#connexion';location.reload()}}>Je fais partie de l’équipe</button>;
 const error=<p className="error" role="alert" hidden={!msg}>{msg}</p>;
 const hasRecovery=mode==='locked'&&!!lockConfig()?.recoveryHash;
-return <>{mode!=='open'&&<main className="lock-screen"><img src="/logo.jpg" alt="GBA"/><h1>GBA Gestion</h1>
+return <>{mode!=='open'&&<main className="lock-screen"><img src={BRAND.logo} alt={BRAND.alt}/><h1>{BRAND.name}</h1>
 {mode==='setup'&&<><p>Espace administration<br/>Créez votre code à 6 chiffres. Il sera demandé à chaque ouverture. Vos données ne changent pas.</p><form onSubmit={createCode}><CodeField autoFocus label="Nouveau code" value={pin} onChange={setPin}/><CodeField label="Confirmer le code" value={second} onChange={setSecond}/><button disabled={busy} className="primary wide"><LockKey/>Créer mon code</button>{error}</form>{team}</>}
 {mode==='recovery'&&<RecoveryNotice code={recovery} action="Ouvrir l’application" onDone={()=>{setRecovery('');setMode('open')}}/>}
 {mode==='locked'&&<><p>Espace administration</p><form onSubmit={unlock}><CodeField autoFocus label="Code à 6 chiffres" value={pin} onChange={setPin}/><button disabled={busy} className="primary wide"><LockKey/>Se connecter</button>{error}</form>{hasRecovery?<button type="button" className="lock-link" onClick={()=>{reset();setMode('forgot')}}>Code oublié</button>:<p className="subtle">Code oublié : utilisez votre sauvegarde sur un autre navigateur. Ne supprimez pas les données de ce navigateur sans sauvegarde.</p>}{team}</>}

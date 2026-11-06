@@ -20,7 +20,7 @@ export function ClientView({ token }) {
   const paidPct = m.contract > 0 ? Math.min(100, Math.round((m.paid / m.contract) * 100)) : 0;
   const phone = String(company.phone || '').replace(/\D/g, '');
   return <main className="client-page">
-    <div className="client-head"><img src={BRAND.logo} alt="" /><div><b>{company.name}</b><small>Suivi de chantier pour {view.client}</small></div></div>
+    <div className="client-head"><img src={company.logo || BRAND.logo} alt="" /><div><b>{company.name}</b><small>Suivi de chantier pour {view.client}</small></div></div>
     <section className="client-hero">
       <div className="client-title"><HardHat size={30} /><div><h1>{project.name}</h1><small>{[project.address, project.status].filter(Boolean).join(' · ')}</small></div></div>
       <p className="client-big">{project.progress} %<small>des travaux réalisés</small></p>
@@ -33,6 +33,7 @@ export function ClientView({ token }) {
         <div><small>Montant du contrat</small><b>{money(m.contract)}</b></div>
         <div><small>Déjà payé</small><b>{money(m.paid)}</b></div>
         <div><small>Facturé, reste à payer</small><b>{money(m.due)}</b></div>
+        {m.retained > 0 && <div><small>Retenue de garantie (payée à la fin)</small><b>{money(m.retained)}</b></div>}
         <div><small>Reste du contrat à facturer</small><b>{money(Math.max(0, m.contract - m.billed))}</b></div>
       </div>
       <p className="subtle">Vous avez payé {paidPct} % du contrat. Les travaux sont réalisés à {project.progress} %.</p>

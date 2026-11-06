@@ -11,7 +11,7 @@ import { clientView } from '../server/team.js';
 import { demoCompany, DEMO_SHARE_TOKEN } from '../src/demoData.js';
 
 const KEY = 'cle-de-test-avec-plus-de-trente-deux-caracteres';
-const MIGRATIONS = ['0001_workspace.sql', '0002_team.sql', '0003_entries.sql', '0004_requests.sql', '0005_presence.sql'];
+const MIGRATIONS = ['0001_workspace.sql', '0002_team.sql', '0003_entries.sql', '0004_requests.sql', '0005_presence.sql', '0006_companies.sql'];
 function makeEnv(extra = {}) {
   const db = new DatabaseSync(':memory:');
   for (const f of MIGRATIONS) db.exec(readFileSync(new URL('../migrations/' + f, import.meta.url), 'utf8'));
@@ -87,7 +87,7 @@ test('espace client : seul le chantier du lien, sans les autres clients ni les i
   const v = clientView(s, DEMO_SHARE_TOKEN);
   assert.equal(v.project.name, 'Villa R+1 à Kati');
   assert.equal(v.project.progress, 45);
-  assert.deepEqual(v.money, { contract: 45000000, billed: 20250000, paid: 17500000, due: 2750000 });
+  assert.deepEqual(v.money, { contract: 45000000, billed: 20250000, paid: 17500000, retained: 0, due: 2750000 });
   assert.equal(v.payments.length, 2);
   assert.ok(v.journal.length > 0 && v.journal.every((j) => ['Avancement', 'Réception'].includes(j.kind)));
   const text = JSON.stringify(v);

@@ -76,3 +76,18 @@
 .period button{padding:8px 4px;font-size:14px;min-height:44px}
 .client-card .summary-grid b{font-size:19px}
 .presence-done span{flex:1}
+/* Logo, message vocal, installation, inscription */
+.logo-picker{display:flex;align-items:center;gap:14px;margin:6px 0 12px;flex-wrap:wrap}
+.logo-picker img{width:72px;height:72px;object-fit:contain;border:1px solid var(--line);border-radius:12px;background:#fff;padding:4px}
+.recorder{margin:6px 0 4px}
+.rec-btn{width:100%;min-height:64px;font-size:17px;background:#fff1f0;border-color:#f3c2b8;color:#b42318}
+.rec-btn.on{background:#b42318;color:#fff;border-color:#b42318;animation:rec 1.2s infinite}
+@keyframes rec{50%{opacity:.75}}
+.rec-done{display:flex;align-items:center;gap:8px}.rec-done audio{flex:1;min-width:0}
+.entry-audio{width:100%;margin:6px 0}
+.install-card{position:relative;display:grid;gap:8px;border:1px solid #bfd8f5;background:#f2f8ff;border-radius:14px;padding:14px 44px 14px 14px;margin:0 0 18px;text-align:left}
+.install-card .primary{justify-self:start}
+.install-close{position:absolute;top:6px;right:6px;min-height:36px;width:36px;padding:0;border:0;background:none}
+.welcome-points{list-style:none;padding:0;margin:18px auto;text-align:left;display:grid;gap:8px;max-width:460px}
+.welcome-points li{display:flex;gap:10px;align-items:center;font-weight:600}.welcome-points svg{color:#16a34a}
+.welcome-box{text-align:left;margin-top:16px}

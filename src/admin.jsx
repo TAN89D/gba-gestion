@@ -4,10 +4,10 @@ import { ROLES } from './permissions.js';
 import { money, fmtDate, today } from './domain.js';
 import { overview, projectRows, invoiceRows, expenseRows, workerRows, activityRows } from './adminData.js';
 import { ENTRY_LABELS, STATUS_LABELS, itemsText } from './entries.js';
-import { PhotoGrid, PhotoView, ReportButton, MyEntries } from './entries.jsx';
+import { PhotoGrid, PhotoView, ReportButton, MyEntries, AudioView } from './entries.jsx';
 import { Thread, requestStatus, printOrder } from './requests.jsx';
 import { spending, overspending, cashbox } from './cashbox.js';
-import { BRAND, DEMO } from './brand.js';
+import { BRAND, DEMO, logoOf } from './brand.js';
 import { leaveDemo } from './demo.jsx';
 import './admin.css';
 
@@ -201,6 +201,7 @@ function EntryCard({ entry, data, reload }) {
     <small>{entry.data.scope && entry.data.scope !== 'Chantier' ? (entry.data.scope === 'Entreprise' ? 'Pour l’entreprise' : 'Dépense personnelle') + ' (caisse du chantier ' + site + ')' : site} · {fmtDate(entry.data.date)} · {entry.userName}{entry.data.category ? ' · ' + entry.data.category : ''}{entry.data.method ? ' · ' + entry.data.method : ''}</small>
     {entry.data.amount && <div className="admin-line"><span>Montant</span><b>{money(entry.data.amount)}</b></div>}
     {entry.applyError && <p className="error" role="alert">Non enregistré sur le téléphone : {entry.applyError}</p>}
+    {entry.hasAudio && <AudioView id={entry.id} />}
     {entry.hasPhoto && (showPhoto ? <PhotoView id={entry.id} alt="Pièce jointe" /> : <div className="admin-actions"><button onClick={() => setShowPhoto(true)}>Voir la photo</button></div>)}
     {entry.status === 'pending' && <div className="admin-actions">
       <select aria-label="Caisse à utiliser" value={accountId} onChange={(e) => setAccountId(e.target.value)}>{(data?.accounts || []).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select>
@@ -393,7 +394,7 @@ export function AdminApp() {
       setError(x.message); setState('error');
     }
   };
-  useEffect(() => { document.title = 'Tableau de bord ' + (DEMO ? 'SoBara' : 'GBA'); load(); }, []);
+  useEffect(() => { document.title = 'Tableau de bord ' + (BRAND.name === 'SoBara' ? 'SoBara' : 'GBA'); load(); }, []);
   const logout = async () => {
     if (DEMO) { await leaveDemo(); return; }
     localStorage.setItem(ADMIN_LOGOUT_KEY, '1');
@@ -409,7 +410,7 @@ export function AdminApp() {
   const toOrder = requests.filter((r) => r.status === 'demande').length;
   const Page = { projects: Projects, invoices: Invoices, expenses: Expenses, workers: Workers, activity: Activity }[tab];
   return <div className="admin">
-    <header className="admin-top"><img src={BRAND.logo} alt={BRAND.alt} /><div className="admin-grow"><h1>Tableau de bord général</h1><small>{data?.settings?.company || BRAND.name} · {me.name}</small></div><button onClick={load}>Actualiser</button><button onClick={logout}>Se déconnecter</button></header>
+    <header className="admin-top"><img src={logoOf(data?.settings)} alt={BRAND.alt} /><div className="admin-grow"><h1>Tableau de bord général</h1><small>{data?.settings?.company || BRAND.name} · {me.name}</small></div><button onClick={load}>Actualiser</button><button onClick={logout}>Se déconnecter</button></header>
     <nav className="admin-tabs" aria-label="Sections">{TABS.map(([k, label]) => <button key={k} className={tab === k ? 'on' : ''} aria-current={tab === k ? 'page' : undefined} onClick={() => setTab(k)}>{label}{k === 'queue' && pendingCount > 0 ? ` (${pendingCount})` : ''}{k === 'material' && toOrder > 0 ? ` (${toOrder})` : ''}</button>)}</nav>
     <main className="admin-main">
       {tab !== 'access' && <p className="admin-note">{data ? <>Données reçues de votre téléphone. Dernière mise à jour : {dateTime(ws.updatedAt)}. Les saisies se font pour l’instant dans l’application.</> : 'Aucune donnée pour le moment : lancez le transfert depuis votre téléphone.'}</p>}
