@@ -198,7 +198,7 @@ export function Bell() {
       } catch (x) { if (x.status === 401 || x.status === 404) setItems(false); }
     };
     load();
-    const t = setInterval(load, 30000);
+    const t = setInterval(load, 15000);
     const back = () => { if (!document.hidden) load(); };
     document.addEventListener('visibilitychange', back);
     return () => { live = false; clearInterval(t); document.removeEventListener('visibilitychange', back); };

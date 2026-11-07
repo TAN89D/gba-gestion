@@ -9,3 +9,4 @@ dist-demo/
 .wrangler-demo/
 dist-sobara/
 .wrangler-sobara/
+backups/
