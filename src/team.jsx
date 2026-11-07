@@ -201,7 +201,7 @@ export function MemberApp({ reason }) {
           const ws = await api('/api/workspace');
           if (ws.data) {
             localStorage.setItem(OWNER_DATA_KEY, JSON.stringify(ws.data));
-            writeSync({ enabled: true, revision: ws.revision, syncedAt: ws.data.updatedAt });
+            writeSync({ enabled: true, revision: ws.revision, syncedAt: ws.data.updatedAt, companyId: me.user.companyId });
             localStorage.removeItem(MEMBER_KEY);
             location.replace('/');
             return;
@@ -590,8 +590,9 @@ export function firstScreen() {
   const hash = location.hash || '';
   if (location.pathname === '/admin' || location.pathname === '/admin/') return { screen: 'admin' };
   const clean = () => history.replaceState(null, '', location.pathname);
-  if (hash.startsWith('#suivi=')) return { screen: 'client', token: decodeURIComponent(hash.slice(7)) };
-  if (hash.startsWith('#invite=')) { const token = decodeURIComponent(hash.slice(8)); clean(); return { screen: 'join', token }; }
+  const decode = (x) => { try { return decodeURIComponent(x); } catch { return ''; } };
+  if (hash.startsWith('#suivi=')) return { screen: 'client', token: decode(hash.slice(7)) };
+  if (hash.startsWith('#invite=')) { const token = decode(hash.slice(8)); clean(); return { screen: 'join', token }; }
   if (hash.startsWith('#connexion-refusee=')) { const reason = hash.slice(19); clean(); return { screen: 'member', reason }; }
   if (hash === '#connecte' || hash === '#connexion') { clean(); return { screen: 'member' }; }
   if (!hasOwnerData() && (read(DEVICE_KEY) || read(MEMBER_KEY))) return { screen: 'member' };

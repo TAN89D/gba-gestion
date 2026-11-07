@@ -23,7 +23,7 @@ export function Welcome() {
       if (!res.ok) throw Error(d.error || 'Inscription impossible pour le moment.');
       // Les données de l'entreprise vivent sur ce téléphone et partent toutes seules vers son espace en ligne.
       localStorage.setItem('gba-web-v3', JSON.stringify(d.workspace.data));
-      writeSync({ enabled: true, revision: d.workspace.revision, syncedAt: d.workspace.data.updatedAt });
+      writeSync({ enabled: true, revision: d.workspace.revision, syncedAt: d.workspace.data.updatedAt, companyId: d.user.companyId });
       localStorage.setItem('gba-device', d.deviceSecret);
       location.replace('/');
     } catch (x) { setError(x.message === 'Failed to fetch' ? 'Pas de connexion Internet. Réessayez.' : x.message); setBusy(false); }

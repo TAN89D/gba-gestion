@@ -12,7 +12,7 @@ const KEY = 'cle-de-test-avec-plus-de-trente-deux-caracteres';
 const BASE = 'https://gba.example';
 function makeEnv() {
   const db = new DatabaseSync(':memory:');
-  for (const f of ['0001_workspace.sql', '0002_team.sql', '0003_entries.sql', '0004_requests.sql', '0005_presence.sql', '0006_companies.sql']) db.exec(readFileSync(new URL('../migrations/' + f, import.meta.url), 'utf8'));
+  for (const f of ['0001_workspace.sql', '0002_team.sql', '0003_entries.sql', '0004_requests.sql', '0005_presence.sql', '0006_companies.sql', '0007_limits.sql']) db.exec(readFileSync(new URL('../migrations/' + f, import.meta.url), 'utf8'));
   const wrap = (sql, args = []) => ({
     bind: (...a) => wrap(sql, a),
     first: async () => db.prepare(sql).get(...args) ?? null,
@@ -190,9 +190,13 @@ test('la limite de stockage n’est jamais dépassée en gardant les pièces joi
   const big = { ...realistic(), attachments: [] };
   big.journal = [{ id: 'j', projectId: 'p1', note: 'x'.repeat(1700000) }];
   const old = JSON.stringify(withAttachments(realistic(), 2));
-  const merged = keepAttachments(big, old);
-  assert.ok(JSON.stringify(merged).length <= 1900000);
-  assert.equal(merged.attachments.length, 0);
+  // Plutôt que de supprimer des pièces jointes en silence, l'envoi est refusé.
+  assert.throws(() => keepAttachments(big, old), /Plus assez de place/);
+  // Celles supprimées sur le téléphone ne reviennent pas ; les autres sont gardées.
+  const small = { ...realistic(), attachments: [] };
+  const two = JSON.parse(old).attachments.map((a) => a.id);
+  assert.deepEqual(keepAttachments(small, old, [two[1]]).attachments.map((a) => a.id), [two[1]]);
+  assert.equal(keepAttachments(small, old).attachments.length, 2);
   assert.equal(keepAttachments(big, 'illisible'), big);
   assert.equal(keepAttachments(big, null), big);
 });

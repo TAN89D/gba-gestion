@@ -17,7 +17,7 @@ export function ClientView({ token }) {
   if (error) return <main className="client-page"><div className="client-head"><img src={BRAND.logo} alt="" /><b>Suivi de chantier</b></div><p className="error">{error}</p></main>;
   if (!view) return <main className="client-page"><p className="subtle">Chargement du suivi…</p></main>;
   const { company, project, money: m } = view;
-  const paidPct = m.contract > 0 ? Math.min(100, Math.round((m.paid / m.contract) * 100)) : 0;
+  const paidPct = m.billed > 0 ? Math.min(100, Math.round((m.paid / m.billed) * 100)) : 0;
   const phone = String(company.phone || '').replace(/\D/g, '');
   return <main className="client-page">
     <div className="client-head"><img src={company.logo || BRAND.logo} alt="" /><div><b>{company.name}</b><small>Suivi de chantier pour {view.client}</small></div></div>
@@ -30,13 +30,13 @@ export function ClientView({ token }) {
     <section className="client-card">
       <h2><Receipt size={22} /> Votre argent</h2>
       <div className="summary-grid">
-        <div><small>Montant du contrat</small><b>{money(m.contract)}</b></div>
+        <div><small>Montant du contrat (hors taxes)</small><b>{money(m.contract)}</b></div>
         <div><small>Déjà payé</small><b>{money(m.paid)}</b></div>
         <div><small>Facturé, reste à payer</small><b>{money(m.due)}</b></div>
         {m.retained > 0 && <div><small>Retenue de garantie (payée à la fin)</small><b>{money(m.retained)}</b></div>}
-        <div><small>Reste du contrat à facturer</small><b>{money(Math.max(0, m.contract - m.billed))}</b></div>
+        <div><small>Reste du contrat à facturer (hors taxes)</small><b>{money(m.toBill ?? Math.max(0, m.contract - m.billed))}</b></div>
       </div>
-      <p className="subtle">Vous avez payé {paidPct} % du contrat. Les travaux sont réalisés à {project.progress} %.</p>
+      <p className="subtle">Vous avez réglé {paidPct} % de ce qui vous a été facturé ({money(m.billed)}). Les travaux sont réalisés à {project.progress} %.</p>
       {view.payments.length > 0 && <><h3>Vos paiements</h3>{view.payments.map((p, i) => <div className="row" key={i}><span className="rowtext"><b>{money(p.amount)}</b><small>{[fmtDate(p.date), p.method, p.number].filter(Boolean).join(' · ')}</small></span></div>)}</>}
     </section>
     <section className="client-card">

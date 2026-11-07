@@ -36,7 +36,7 @@ export async function enterDemo(role) {
   if (role === 'direction') {
     localStorage.setItem('gba-web-v3', JSON.stringify(r.workspace.data));
     // La démo du patron est reliée à la base commune de la démo : ce qu'il fait, l'équipe le voit.
-    writeSync({ enabled: true, revision: r.workspace.revision, syncedAt: r.workspace.data.updatedAt });
+    writeSync({ enabled: true, revision: r.workspace.revision, syncedAt: r.workspace.data.updatedAt, companyId: 'main' });
   } else localStorage.setItem('gba-member', '1');
   localStorage.setItem(ROLE_KEY, role);
   location.replace('/');

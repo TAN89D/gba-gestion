@@ -59,7 +59,13 @@ export async function handleDemo(request, env) {
   if (request.method !== 'GET' && origin && origin !== url.origin) return reply({ error: 'Origine refusée.' }, 403);
   try {
     if (request.method === 'POST' && url.pathname === '/api/demo/enter') return await enter(request, env, url);
-    if (request.method === 'POST' && url.pathname === '/api/demo/reset') { await resetDemo(env); return reply({ ok: true }); }
+    if (request.method === 'POST' && url.pathname === '/api/demo/reset') {
+      const now = Date.now();
+      const claim = await env.DB.prepare("INSERT INTO meta(key,value) VALUES('demo_reset',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE CAST(meta.value AS INTEGER) < ?").bind(String(now), now - 600000).run();
+      if (claim.meta.changes !== 1) return reply({ error: 'La démonstration a été remise à zéro il y a moins de 10 minutes. Réessayez un peu plus tard.' }, 429);
+      await resetDemo(env);
+      return reply({ ok: true });
+    }
     return reply({ error: 'Adresse inconnue.' }, 404);
   } catch (e) {
     console.error('demo', e?.message);

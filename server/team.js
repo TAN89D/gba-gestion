@@ -1,4 +1,4 @@
-import { apply, validate, blankCompany, docTotal, retained as retainedOf } from '../src/domain.js';
+import { apply, validate, blankCompany, docTotal, docHT, retained as retainedOf } from '../src/domain.js';
 import { ROLES, viewFor, canWrite, canManageTeam } from '../src/permissions.js';
 import { heldBy } from '../src/cashbox.js';
 
@@ -145,12 +145,20 @@ async function createCompany(request, env, url) {
   const phone = shortText(body.phone, 30, 'Téléphone');
   if (!company || !name) fail(400, 'Indiquez le nom de l’entreprise et votre nom.');
   if (!/^\d{4}$/.test(String(body.pin))) fail(400, 'Choisissez un code à 4 chiffres.');
+  const ip = (request.headers.get('CF-Connecting-IP') || '').slice(0, 64);
+  const day = new Date(Date.now() - 86400000).toISOString();
+  const recent = await env.DB.prepare('SELECT COUNT(*) AS n, SUM(CASE WHEN ip=? THEN 1 ELSE 0 END) AS mine FROM companies WHERE created_at>?').bind(ip, day).first();
+  if (ip && Number(recent?.mine || 0) >= 3) fail(429, 'Trop d’inscriptions depuis cette connexion aujourd’hui. Réessayez demain ou contactez SoBara.');
+  if (Number(recent?.n || 0) >= 200) fail(429, 'Les inscriptions sont momentanément fermées. Réessayez plus tard.');
   const companyId = crypto.randomUUID();
   const userId = crypto.randomUUID();
   const now = new Date().toISOString();
   const data = blankCompany({ company, phone, now });
   validate(data);
-  await env.DB.prepare('INSERT INTO companies(id,name,phone,active,created_at) VALUES(?,?,?,1,?)').bind(companyId, company, phone, now).run();
+  // Le contrôle et l'ajout se font en une seule opération : des envois simultanés ne dépassent pas la limite.
+  const made = await env.DB.prepare("INSERT INTO companies(id,name,phone,active,created_at,ip) SELECT ?,?,?,1,?,? WHERE (? = '' OR (SELECT COUNT(*) FROM companies WHERE ip=? AND created_at>?) < 3) AND (SELECT COUNT(*) FROM companies WHERE created_at>?) < 200")
+    .bind(companyId, company, phone, now, ip, ip, ip, day, day).run();
+  if (made.meta.changes !== 1) fail(429, 'Trop d’inscriptions pour le moment. Réessayez demain ou contactez SoBara.');
   await env.DB.prepare('INSERT INTO workspaces(company_id,revision,payload,updated_at) VALUES(?,1,?,?)').bind(companyId, JSON.stringify(data), now).run();
   await env.DB.prepare("INSERT INTO users(id,name,role,email,employee_id,project_ids,active,created_at,company_id) VALUES(?,?,'direction',NULL,NULL,'[]',1,?,?)").bind(userId, name, now, companyId).run();
   const secret = randomToken();
@@ -272,29 +280,31 @@ async function workspace(request, env) {
 // Quand le téléphone n'envoie pas ses pièces jointes (trop lourdes), celles déjà en ligne
 // sont conservées, dans la limite de ce que la base peut stocker.
 const STORE_LIMIT = 1900000;
-export function keepAttachments(data, existingPayload) {
+export class AttachmentSpaceError extends Error {}
+// keepIds : les pièces jointes que le téléphone possède encore (les autres ont été supprimées).
+export function keepAttachments(data, existingPayload, keepIds) {
   if (!existingPayload) return data;
   let existing = [];
   try { existing = JSON.parse(existingPayload).attachments || []; } catch { return data; }
+  const wanted = Array.isArray(keepIds) ? existing.filter((a) => keepIds.includes(a.id)) : existing;
   let size = encoder.encode(JSON.stringify(data)).length;
-  const kept = [];
-  for (const item of existing) {
-    const weight = encoder.encode(JSON.stringify(item)).length + 1;
-    if (size + weight > STORE_LIMIT) continue;
-    kept.push(item);
-    size += weight;
-  }
-  return { ...data, attachments: kept };
+  for (const item of wanted) size += encoder.encode(JSON.stringify(item)).length + 1;
+  if (size > STORE_LIMIT) throw new AttachmentSpaceError('Plus assez de place en ligne pour garder toutes vos pièces jointes. Rien n’a été supprimé ni remplacé : supprimez d’anciennes photos ou PDF dans l’application, puis réessayez.');
+  return { ...data, attachments: wanted };
 }
 async function importWorkspace(request, env) {
   const user = await requireManager(request, env);
-  const { revision, data, attachmentsOmitted } = await readJson(request);
+  const { revision, data, attachmentsOmitted, attachmentIds, companyId } = await readJson(request);
   if (!Number.isInteger(revision) || revision < 0) fail(400, 'Révision invalide.');
+  // 1. Les données envoyées doivent appartenir à l'entreprise du compte connecté (jamais à une autre).
+  if (companyId !== undefined ? companyId !== user.companyId : user.companyId !== MAIN) fail(409, 'Ces données appartiennent à une autre entreprise que le compte connecté. Rien n’a été remplacé.');
   if (data?.demo === true) fail(400, 'Les données de démonstration ne peuvent pas remplacer la base commune.');
   try { validate(data); } catch (e) { fail(400, e.message || 'Données invalides.'); }
   const existing = attachmentsOmitted === true ? await readWorkspace(env, user.companyId) : null;
   const previous = existing && existing.revision === revision ? JSON.stringify(existing.data) : null;
-  const payload = JSON.stringify(previous ? keepAttachments(data, previous) : data);
+  let merged = data;
+  try { if (previous) merged = keepAttachments(data, previous, attachmentIds); } catch (e) { if (e instanceof AttachmentSpaceError) fail(413, e.message); throw e; }
+  const payload = JSON.stringify(merged);
   const now = new Date().toISOString();
   const saved = await writeWorkspace(env, user.companyId, revision, payload, now);
   if (saved.meta.changes !== 1) fail(409, 'Une autre version existe sur le serveur.');
@@ -379,6 +389,8 @@ async function createInvite(request, env, id) {
 // ---- Saisies de l'équipe : dépenses et paiements à valider, incidents, photos de chantier ----
 const ENTRY_KINDS = { direction: ['expense', 'teamPayment', 'incident', 'photo'], gestionnaire: ['expense', 'teamPayment', 'incident', 'photo'], chef: ['expense', 'incident', 'photo'], ouvrier: ['incident', 'photo'] };
 const PHOTO_LIMIT = 1500000;
+const MEDIA_PER_DAY = 80;
+const MEDIA_QUOTA = 250000000; // environ 250 Mo de photos et vocaux par entreprise
 // Message vocal : environ une minute au format compressé du téléphone.
 const AUDIO_LIMIT = 900000;
 const AUDIO_FORMAT = /^data:audio\/(webm|ogg|mp4|mpeg|aac|x-m4a)(;[\w=.-]+)*;base64,[A-Za-z0-9+/=]+$/;
@@ -412,7 +424,12 @@ async function visibleProjects(env, user) {
   return { current, ids: new Set(viewFor(current.data, user).projects.map((p) => p.id)) };
 }
 // Le chef de chantier ne voit, parmi les saisies d'argent, que les siennes (dépenses de sa caisse).
-const entryAllowed = (entry, user, ids) => (seesMoney(user) ? true : MONEY_KINDS.includes(entry.kind) ? entry.user_id === user.id : ids.has(entry.project_id));
+const scopeOf = (entry) => { try { return JSON.parse(entry.data || '{}').scope || 'Chantier'; } catch { return 'Chantier'; } };
+const entryAllowed = (entry, user, ids) => {
+  if (user.role === 'direction') return true;
+  if (MONEY_KINDS.includes(entry.kind)) return entry.user_id === user.id || (user.role === 'gestionnaire' && scopeOf(entry) === 'Chantier');
+  return user.role === 'gestionnaire' || ids.has(entry.project_id);
+};
 async function reservedOnTask(env, taskId, state, companyId) {
   const { results } = await env.DB.prepare("SELECT id,data FROM entries WHERE company_id=? AND kind='teamPayment' AND (status='pending' OR (status='approved' AND applied_at IS NULL))").bind(companyId).all();
   return results.reduce((n, row) => { const d = JSON.parse(row.data); return d.taskId === taskId && !state.teamPayments.some((p) => p.id === row.id) ? n + Number(d.amount || 0) : n; }, 0);
@@ -468,6 +485,13 @@ async function createEntry(request, env) {
     photo = body.photo;
   }
   if (body.kind === 'photo' && !photo) fail(400, 'Ajoutez une photo.');
+  if (photo || audio) {
+    const since = new Date(Date.now() - 86400000).toISOString();
+    const mine = await env.DB.prepare('SELECT COUNT(*) AS n FROM entries WHERE user_id=? AND created_at>? AND (photo IS NOT NULL OR audio IS NOT NULL)').bind(user.id, since).first();
+    if (Number(mine?.n || 0) >= MEDIA_PER_DAY) fail(429, 'Trop de photos ou de messages vocaux envoyés aujourd’hui. Réessayez demain.');
+    const used = await env.DB.prepare('SELECT COALESCE(SUM(LENGTH(photo)),0)+COALESCE(SUM(LENGTH(audio)),0) AS n FROM entries WHERE company_id=?').bind(user.companyId).first();
+    if (Number(used?.n || 0) + (photo?.length || 0) + (audio?.length || 0) > MEDIA_QUOTA) fail(507, 'L’espace pour les photos et messages vocaux de l’entreprise est plein. Contactez SoBara.');
+  }
   // L'argent sort de la caisse confiée à la personne (celle du chantier si elle en a une) ;
   // la direction peut encore la changer au moment de valider.
   let accountId = null;
@@ -498,14 +522,14 @@ async function listEntries(request, env) {
 }
 async function entryPhoto(request, env, id) {
   const user = await requireUser(request, env);
-  const row = await env.DB.prepare('SELECT kind,project_id,user_id,photo,company_id FROM entries WHERE id=?').bind(id).first();
+  const row = await env.DB.prepare('SELECT kind,project_id,user_id,data,photo,company_id FROM entries WHERE id=?').bind(id).first();
   const { ids } = await visibleProjects(env, user);
   if (!row || !(row.company_id === user.companyId) || !entryAllowed(row, user, ids) || !row.photo) fail(404, 'Photo introuvable.');
   return reply({ photo: row.photo });
 }
 async function entryAudio(request, env, id) {
   const user = await requireUser(request, env);
-  const row = await env.DB.prepare('SELECT kind,project_id,user_id,audio,company_id FROM entries WHERE id=?').bind(id).first();
+  const row = await env.DB.prepare('SELECT kind,project_id,user_id,data,audio,company_id FROM entries WHERE id=?').bind(id).first();
   const { ids } = await visibleProjects(env, user);
   if (!row || !(row.company_id === user.companyId) || !entryAllowed(row, user, ids) || !row.audio) fail(404, 'Message vocal introuvable.');
   return reply({ audio: row.audio });
@@ -692,7 +716,7 @@ async function markRequestApplied(request, env, id) {
 // ---- Fil de messages (incident ou demande de matériel) ----
 async function threadAllowed(env, user, id) {
   const { ids } = await visibleProjects(env, user);
-  const entry = await env.DB.prepare('SELECT kind,project_id,user_id FROM entries WHERE id=? AND company_id=?').bind(id, user.companyId).first();
+  const entry = await env.DB.prepare('SELECT kind,project_id,user_id,data FROM entries WHERE id=? AND company_id=?').bind(id, user.companyId).first();
   if (entry) return entryAllowed(entry, user, ids);
   const req = await env.DB.prepare('SELECT project_id,user_id FROM material_requests WHERE id=? AND company_id=?').bind(id, user.companyId).first();
   return !!req && requestAllowed(req, user, ids);
@@ -798,13 +822,13 @@ async function notifications(request, env, url) {
   // Messages des autres dans les discussions qui me concernent.
   {
     const { results } = await env.DB.prepare(`SELECT m.id,m.thread_id,m.user_name,m.text,m.created_at,
-      e.user_id AS e_user,e.project_id AS e_project,e.kind AS e_kind,r.user_id AS r_user,r.project_id AS r_project
+      e.user_id AS e_user,e.project_id AS e_project,e.kind AS e_kind,e.data AS e_data,r.user_id AS r_user,r.project_id AS r_project
       FROM messages m LEFT JOIN entries e ON e.id=m.thread_id AND e.company_id=m.company_id LEFT JOIN material_requests r ON r.id=m.thread_id AND r.company_id=m.company_id
       WHERE m.company_id=? AND m.created_at>? AND m.user_id<>? ORDER BY m.created_at DESC LIMIT 40`).bind(cid, since, user.id).all();
     for (const m of results) {
       const owner = m.e_user || m.r_user;
       const project = m.e_project || m.r_project;
-      const allowed = m.e_user ? entryAllowed({ kind: m.e_kind, user_id: m.e_user, project_id: m.e_project }, user, ids) : m.r_user ? requestAllowed({ user_id: m.r_user, project_id: m.r_project }, user, ids) : false;
+      const allowed = m.e_user ? entryAllowed({ kind: m.e_kind, user_id: m.e_user, project_id: m.e_project, data: m.e_data }, user, ids) : m.r_user ? requestAllowed({ user_id: m.r_user, project_id: m.r_project }, user, ids) : false;
       if (!allowed || (!lead && owner !== user.id)) continue;
       items.push({ id: 'm-' + m.id, at: m.created_at, kind: 'message', title: 'Message de ' + m.user_name, text: [site(project), m.text].filter(Boolean).join(' · '), entryId: m.e_user ? m.thread_id : undefined, projectId: project });
     }
@@ -834,6 +858,7 @@ export function clientView(data, token) {
   // Mêmes calculs que l'application, pour que le client voie exactement les mêmes montants.
   const invoices = live(data.invoices).filter((i) => i.projectId === project.id);
   const billed = invoices.reduce((n, i) => n + docTotal(i), 0);
+  const billedHT = invoices.reduce((n, i) => n + docHT(i), 0);
   const retained = invoices.reduce((n, i) => n + retainedOf(i), 0);
   const paid = live(data.payments).filter((x) => invoices.some((i) => i.id === x.invoiceId)).reduce((n, x) => n + Number(x.amount || 0), 0);
   const client = data.clients.find((c) => c.id === project.clientId);
@@ -844,7 +869,7 @@ export function clientView(data, token) {
     company: { name: s.company || '', phone: s.phone || '', email: s.email || '', logo: /^data:image\/(png|jpeg|webp);base64,/.test(s.logo || '') ? s.logo : '' },
     client: client?.name || '',
     project: { name: project.name, status: project.status || '', address: project.address || '', startDate: project.startDate || '', expectedEndDate: project.expectedEndDate || '', progress: Number(project.progress || 0) },
-    money: { contract: Number(project.contractAmount || 0), billed, paid, retained, due: Math.max(0, billed - retained - paid) },
+    money: { contract: Number(project.contractAmount || 0), billed, billedHT, paid, retained, due: Math.max(0, billed - retained - paid), toBill: Math.max(0, Number(project.contractAmount || 0) - billedHT) },
     payments: live(data.payments).filter((x) => invoices.some((i) => i.id === x.invoiceId)).slice(-10).reverse().map((x) => ({ date: x.date || '', amount: Number(x.amount || 0), method: x.method || '', number: x.number || '' })),
     journal, photos,
   };

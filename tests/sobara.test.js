@@ -11,7 +11,7 @@ import { clientView } from '../server/team.js';
 import { demoCompany, DEMO_SHARE_TOKEN } from '../src/demoData.js';
 
 const KEY = 'cle-de-test-avec-plus-de-trente-deux-caracteres';
-const MIGRATIONS = ['0001_workspace.sql', '0002_team.sql', '0003_entries.sql', '0004_requests.sql', '0005_presence.sql', '0006_companies.sql'];
+const MIGRATIONS = ['0001_workspace.sql', '0002_team.sql', '0003_entries.sql', '0004_requests.sql', '0005_presence.sql', '0006_companies.sql', '0007_limits.sql'];
 function makeEnv(extra = {}) {
   const db = new DatabaseSync(':memory:');
   for (const f of MIGRATIONS) db.exec(readFileSync(new URL('../migrations/' + f, import.meta.url), 'utf8'));
@@ -87,7 +87,7 @@ test('espace client : seul le chantier du lien, sans les autres clients ni les i
   const v = clientView(s, DEMO_SHARE_TOKEN);
   assert.equal(v.project.name, 'Villa R+1 à Kati');
   assert.equal(v.project.progress, 45);
-  assert.deepEqual(v.money, { contract: 45000000, billed: 20250000, paid: 17500000, retained: 0, due: 2750000 });
+  assert.deepEqual(v.money, { contract: 45000000, billed: 20250000, billedHT: 20250000, paid: 17500000, retained: 0, due: 2750000, toBill: 24750000 });
   assert.equal(v.payments.length, 2);
   assert.ok(v.journal.length > 0 && v.journal.every((j) => ['Avancement', 'Réception'].includes(j.kind)));
   const text = JSON.stringify(v);
@@ -212,4 +212,21 @@ test('notifications : le chef voit le problème vocal de l’ouvrier et sa répo
   const now = new Date(Date.now() + 1000).toISOString();
   assert.equal((await (await raw(env, 'GET', '/api/notifications?since=' + now, undefined, chef)).json()).items.length, 0);
   assert.equal((await raw(env, 'GET', '/api/notifications')).status, 401);
+});
+
+test('audit : la démo ne peut être remise à zéro qu’une fois toutes les 10 minutes', async () => {
+  const env = makeEnv({ DEMO: '1' });
+  assert.equal((await raw(env, 'POST', '/api/demo/reset')).status, 200);
+  assert.equal((await raw(env, 'POST', '/api/demo/reset')).status, 429);
+});
+
+test('audit : la relance ne réclame jamais la retenue de garantie non libérée', async () => {
+  const { overdue, due } = await import('../src/domain.js');
+  let s = empty();
+  s = apply(s, { type: 'save', table: 'clients', data: { id: 'c', name: 'C' } });
+  s = apply(s, { type: 'invoice', data: { id: 'i', clientId: 'c', retention: 10, date: '2026-01-01', tax: 0, discount: 0, lines: [{ description: 'x', quantity: 1, unit: 'u', unitPrice: 1000 }] } });
+  s = apply(s, { type: 'save', table: 'schedules', data: { id: 'sc', invoiceId: 'i', dueDate: '2026-02-01', amount: 1000 } });
+  s = apply(s, { type: 'payment', data: { invoiceId: 'i', accountId: 'main', amount: 800, date: '2026-02-02' } });
+  assert.equal(due(s, s.invoices[0]), 100);
+  assert.equal(overdue(s, '2026-03-01')[0].amount, 100);
 });

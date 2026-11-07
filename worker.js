@@ -1,5 +1,5 @@
 import {validate} from './src/domain.js';
-import {handleTeam,keepAttachments} from './server/team.js';
+import {handleTeam,keepAttachments,AttachmentSpaceError} from './server/team.js';
 import {handleDemo,resetDemo} from './server/demo.js';
 const json=(data,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
 export default {async fetch(request,env){const u=new URL(request.url);if(!u.pathname.startsWith('/api/'))return env.ASSETS.fetch(request);
@@ -14,9 +14,10 @@ export default {async fetch(request,env){const u=new URL(request.url);if(!u.path
  if(request.method!=='PUT')return json({error:'Méthode non autorisée.'},405);
  if(Number(request.headers.get('Content-Length')||0)>1800000)return json({error:'Sauvegarde cloud limitée à 1,8 Mo. Exportez localement les pièces volumineuses.'},413);
  const raw=await request.text();if(raw.length>1800000)return json({error:'Sauvegarde cloud limitée à 1,8 Mo. Exportez localement les pièces volumineuses.'},413);
- const {revision,data,attachmentsOmitted}=JSON.parse(raw);if(!Number.isInteger(revision)||revision<0)return json({error:'Révision invalide.'},400);if(data?.demo===true)return json({error:'Les données de démonstration ne peuvent pas remplacer la sauvegarde.'},400);validate(data);
+ const {revision,data,attachmentsOmitted,attachmentIds}=JSON.parse(raw);if(!Number.isInteger(revision)||revision<0)return json({error:'Révision invalide.'},400);if(data?.demo===true)return json({error:'Les données de démonstration ne peuvent pas remplacer la sauvegarde.'},400);validate(data);
  const previous=attachmentsOmitted===true?await env.DB.prepare('SELECT payload FROM workspace WHERE id=1 AND revision=?').bind(revision).first():null;
- const payload=JSON.stringify(previous?keepAttachments(data,previous.payload):data),now=new Date().toISOString();let result;
+ let merged=data;try{if(previous)merged=keepAttachments(data,previous.payload,attachmentIds)}catch(e){if(e instanceof AttachmentSpaceError)return json({error:e.message},413);throw e}
+ const payload=JSON.stringify(merged),now=new Date().toISOString();let result;
  if(revision===0)result=await env.DB.prepare('INSERT OR IGNORE INTO workspace(id,revision,payload,updated_at) VALUES(1,1,?,?)').bind(payload,now).run();
  else result=await env.DB.prepare('UPDATE workspace SET revision=revision+1,payload=?,updated_at=? WHERE id=1 AND revision=?').bind(payload,now,revision).run();
  if(result.meta.changes!==1)return json({error:'Une autre version a été enregistrée. Exportez vos données locales puis restaurez la version distante avant de continuer.'},409);

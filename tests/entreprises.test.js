@@ -6,7 +6,7 @@ import worker from '../worker.js';
 import { empty, apply, validate, due, retained, blankCompany } from '../src/domain.js';
 
 const KEY = 'cle-de-test-avec-plus-de-trente-deux-caracteres';
-const MIGRATIONS = ['0001_workspace.sql', '0002_team.sql', '0003_entries.sql', '0004_requests.sql', '0005_presence.sql', '0006_companies.sql'];
+const MIGRATIONS = ['0001_workspace.sql', '0002_team.sql', '0003_entries.sql', '0004_requests.sql', '0005_presence.sql', '0006_companies.sql', '0007_limits.sql'];
 function makeEnv(extra = {}) {
   const db = new DatabaseSync(':memory:');
   for (const f of MIGRATIONS) db.exec(readFileSync(new URL('../migrations/' + f, import.meta.url), 'utf8'));
@@ -40,7 +40,7 @@ async function prepare(env, who, tag) {
   let data = apply(who.workspace.data, { type: 'save', table: 'clients', data: { id: 'c-' + tag, name: 'Client ' + tag } });
   data = apply(data, { type: 'save', table: 'projects', data: { id: 'p-' + tag, name: 'Chantier ' + tag, clientId: 'c-' + tag, contractAmount: 1000000, budget: 0, shareToken: 'lien-de-suivi-' + tag + '-0123456789' } });
   data = apply(data, { type: 'settings', data: { logo: LOGO } });
-  assert.equal((await raw(env, 'PUT', '/api/workspace', { revision: 1, data }, who.cookie)).status, 200);
+  assert.equal((await raw(env, 'PUT', '/api/workspace', { revision: 1, data, companyId: who.user.companyId }, who.cookie)).status, 200);
   const made = await json(await raw(env, 'POST', '/api/users', { name: 'Ouvrier ' + tag, role: 'ouvrier', projectIds: ['p-' + tag] }, who.cookie));
   const inv = await json(await raw(env, 'POST', `/api/users/${made.user.id}/invite`, undefined, who.cookie));
   const worker_ = cookieOf(await raw(env, 'POST', '/api/auth/invite/redeem', { token: inv.token, pin: '1357' }));
@@ -154,4 +154,46 @@ test('logo de l’entreprise : image contrôlée, et entreprise vierge valide', 
   assert.equal(apply(s, { type: 'settings', data: { logo: LOGO } }).settings.logo, LOGO);
   assert.throws(() => apply(s, { type: 'settings', data: { logo: 'data:image/svg+xml;base64,PHN2Zz4=' } }), /Logo invalide/);
   assert.throws(() => apply(s, { type: 'settings', data: { logo: 'data:image/png;base64,' + 'A'.repeat(300000) } }), /Logo invalide/);
+});
+
+test('audit : des données d’une entreprise ne peuvent jamais remplacer celles d’une autre', async () => {
+  const env = makeEnv();
+  const a = await signup(env, 'Entreprise A');
+  const b = await signup(env, 'Entreprise B');
+  const dataA = apply(a.workspace.data, { type: 'save', table: 'clients', data: { id: 'c-a', name: 'Client A' } });
+  // Le téléphone de A est connecté au compte de B : l'envoi est refusé, rien n'est remplacé.
+  assert.equal((await raw(env, 'PUT', '/api/workspace', { revision: 1, data: dataA, companyId: a.user.companyId }, b.cookie)).status, 409);
+  assert.equal((await raw(env, 'PUT', '/api/workspace', { revision: 1, data: dataA }, b.cookie)).status, 409, 'sans entreprise indiquée, seule l’entreprise d’origine est acceptée');
+  assert.deepEqual((await json(await raw(env, 'GET', '/api/workspace', undefined, b.cookie))).data.clients, []);
+  assert.equal((await raw(env, 'PUT', '/api/workspace', { revision: 1, data: dataA, companyId: a.user.companyId }, a.cookie)).status, 200);
+});
+
+test('audit : le gestionnaire voit les dépenses de chantier, pas les dépenses personnelles des autres', async () => {
+  const env = makeEnv();
+  const a = await signup(env, 'Entreprise G');
+  let data = apply(a.workspace.data, { type: 'save', table: 'clients', data: { id: 'c', name: 'C' } });
+  data = apply(data, { type: 'save', table: 'projects', data: { id: 'p', name: 'P', clientId: 'c', contractAmount: 1, budget: 0 } });
+  data = apply(data, { type: 'save', table: 'employees', data: { id: 'e-chef', name: 'Chef' } });
+  data = apply(data, { type: 'save', table: 'accounts', data: { id: 'k', name: 'Caisse chef', opening: 0, projectId: 'p', holderId: 'e-chef' } });
+  assert.equal((await raw(env, 'PUT', '/api/workspace', { revision: 1, data, companyId: a.user.companyId }, a.cookie)).status, 200);
+  const invite = async (body) => { const made = await json(await raw(env, 'POST', '/api/users', body, a.cookie)); const inv = await json(await raw(env, 'POST', `/api/users/${made.user.id}/invite`, undefined, a.cookie)); return cookieOf(await raw(env, 'POST', '/api/auth/invite/redeem', { token: inv.token, pin: '1357' })); };
+  const chef = await invite({ name: 'Chef', role: 'chef', employeeId: 'e-chef', projectIds: ['p'] });
+  const gest = await invite({ name: 'Gest', role: 'gestionnaire' });
+  const add = async (scope, description) => (await json(await raw(env, 'POST', '/api/entries', { kind: 'expense', projectId: 'p', scope, description, amount: 1000, photo: LOGO }, chef))).entry.id;
+  const site = await add('Chantier', 'Ciment');
+  const perso = await add('Personnel', 'Avance perso');
+  const seen = (await json(await raw(env, 'GET', '/api/entries', undefined, gest))).entries.map((e) => e.id);
+  assert.ok(seen.includes(site));
+  assert.ok(!seen.includes(perso));
+  assert.equal((await raw(env, 'GET', `/api/entries/${perso}/photo`, undefined, gest)).status, 404);
+  assert.ok(!(await json(await raw(env, 'GET', '/api/notifications', undefined, gest))).items.some((x) => x.entryId === perso));
+  assert.equal((await raw(env, 'GET', `/api/entries/${perso}/photo`, undefined, a.cookie)).status, 200, 'la direction voit tout');
+});
+
+test('audit : inscriptions limitées par connexion', async () => {
+  const env = makeEnv();
+  const from = (ip, n) => raw(env, 'POST', '/api/companies', { company: 'Spam ' + n, name: 'X', pin: '1234' }, null, { 'CF-Connecting-IP': ip });
+  for (let i = 0; i < 3; i++) assert.equal((await from('1.2.3.4', i)).status, 201);
+  assert.equal((await from('1.2.3.4', 9)).status, 429);
+  assert.equal((await from('5.6.7.8', 1)).status, 201, 'une autre connexion peut s’inscrire');
 });
