@@ -106,3 +106,10 @@
 .bell-ico{font-size:22px;line-height:1.2}
 .bell-when{font-size:12px!important}
 .member-with-tabs .member-brand{padding-right:52px}
+.sync-alert{display:grid;gap:8px;border:2px solid #dc2626;background:#fff1f0;border-radius:14px;padding:14px;margin:0 0 18px}
+.sync-alert b{display:flex;gap:8px;align-items:flex-start;color:#b42318}
+.sync-alert .primary{justify-self:start}
+.opening-fix p{margin:6px 0}
+.budget-row{border-bottom:1px solid var(--line);padding-bottom:8px;margin-bottom:8px}
+.budget-row .row{border-bottom:0}
+.budget-row .chips button{min-height:40px;padding:6px 12px;font-size:14px}

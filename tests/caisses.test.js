@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import worker from '../worker.js';
-import { empty, apply, validate, balance, today } from '../src/domain.js';
+import { empty, apply, validate, balance, today, find } from '../src/domain.js';
 import { cashbox, spending, overspending } from '../src/cashbox.js';
 import { viewFor } from '../src/permissions.js';
 import { entryToAction, pullApproved, pullRequests, reservedOn } from '../src/entries.js';
@@ -210,4 +210,45 @@ test('messages : la direction répond à un incident, seules les personnes conce
   assert.equal(last.at(-1).text, 'n304', 'les derniers messages restent visibles');
   assert.equal((await raw(env, 'POST', `/api/entries/${inc.id}/decision`, { decision: 'resolve', reason: 'Réparé' }, boss)).status, 200);
   assert.equal((await raw(env, 'POST', `/api/entries/${inc.id}/decision`, { decision: 'reopen' }, boss)).status, 200);
+});
+
+test('caisse créée avec un « solde initial » par erreur : on le corrige, ou on le fait venir de la caisse entreprise', () => {
+  let s = empty();
+  s = apply(s, { type: 'cash', data: { accountId: 'main', amount: 1000000, label: 'Apport', date: D } });
+  s = save(s, 'clients', { id: 'c', name: 'C' });
+  s = save(s, 'projects', { id: 'p', name: 'Renouvellement', clientId: 'c', contractAmount: 1200000, budget: 1200000 });
+  s = save(s, 'accounts', { id: 'k', name: 'Caisse Renouvellement', opening: 800000, projectId: 'p' });
+  assert.equal(balance(s, 'k') + balance(s, 'main'), 1800000, 'l’argent « de départ » s’ajoute sans sortir d’ailleurs');
+  // Pas assez dans la caisse entreprise : rien ne change.
+  const poor = apply(s, { type: 'cash', data: { accountId: 'main', amount: -500000, label: 'Retrait', date: D } });
+  assert.throws(() => apply(poor, { type: 'openingToTransfer', id: 'k', data: { fromId: 'main' } }), /il manque 300/);
+  const moved = apply(s, { type: 'openingToTransfer', id: 'k', data: { fromId: 'main', label: 'Budget Renouvellement' } });
+  assert.equal(find(moved, 'accounts', 'k').opening, 0);
+  assert.equal(balance(moved, 'k'), 800000);
+  assert.equal(balance(moved, 'main'), 200000);
+  assert.equal(balance(moved, 'k') + balance(moved, 'main'), 1000000, 'le total est juste');
+  assert.equal(validate(moved), moved);
+  // Ou simplement corriger le montant de départ, avec un motif gardé dans l'historique.
+  assert.throws(() => apply(s, { type: 'fixOpening', id: 'k', data: { opening: 0 } }), /pourquoi/);
+  const fixed = apply(s, { type: 'fixOpening', id: 'k', data: { opening: 0 }, reason: 'Erreur de saisie' });
+  assert.equal(find(fixed, 'accounts', 'k').opening, 0);
+  assert.equal(find(fixed, 'accounts', 'k').openingHistory[0].from, 800000);
+  assert.equal(fixed.audit.at(-1).reason, 'Erreur de saisie');
+});
+
+test('budget donné par erreur : on corrige le montant ou on l’annule, et les soldes suivent', () => {
+  let s = sample();
+  assert.equal(balance(s, 'k1'), 150000);
+  s = apply(s, { type: 'correctTransfer', id: 'tr1', data: { amount: 100000 }, reason: 'Correction du montant' });
+  assert.equal(balance(s, 'k1'), 100000);
+  assert.equal(balance(s, 'main'), 900000);
+  assert.equal(s.transfers.filter((t) => !t.void).length, 1);
+  assert.equal(find(s, 'transfers', 'tr1').void, true);
+  assert.throws(() => apply(s, { type: 'correctTransfer', id: 'tr1', data: { amount: 5 }, reason: 'x' }), /déjà annulé/);
+  const fresh = s.transfers.find((t) => !t.void);
+  assert.throws(() => apply(s, { type: 'correctTransfer', id: fresh.id, data: { amount: 5000000 }, reason: 'x' }), /n’a que/);
+  s = apply(s, { type: 'void', table: 'transfers', id: fresh.id, reason: 'Erreur' });
+  assert.equal(balance(s, 'k1'), 0);
+  assert.equal(balance(s, 'main'), 1000000);
+  assert.equal(validate(s), s);
 });

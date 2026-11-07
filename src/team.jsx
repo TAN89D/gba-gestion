@@ -566,7 +566,7 @@ export function TeamAdmin({ getState, backupNow, engine, syncStatus }) {
     try { await api(`/api/users/${u.id}`, { method: 'PATCH', body: { active } }); if (!active) setInvite(null); await load(); } catch (x) { setError(x.message); }
   };
   return (
-    <section>
+    <section id="equipe">
       <h3>Équipe & accès</h3>
       {status === 'loading' && <p className="subtle">Vérification…</p>}
       {status === 'unavailable' && <p className="subtle">Service d’équipe indisponible pour le moment : {error}</p>}

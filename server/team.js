@@ -87,6 +87,16 @@ async function currentUser(request, env) {
     .bind(await sha256(token), nowSeconds()).first();
   return row ? publicUser(row) : null;
 }
+// Quand il reste moins de 20 jours, la session repart pour 30 jours (cookie renouvelé).
+async function refreshSession(request, env, url) {
+  const token = readCookie(request, SESSION_COOKIE);
+  if (!token) return [];
+  const hash = await sha256(token);
+  const row = await env.DB.prepare('SELECT expires_at FROM sessions WHERE token_hash=?').bind(hash).first();
+  if (!row || row.expires_at - nowSeconds() > 20 * 86400) return [];
+  await env.DB.prepare('UPDATE sessions SET expires_at=? WHERE token_hash=?').bind(nowSeconds() + SESSION_SECONDS, hash).run();
+  return [cookie(SESSION_COOKIE, token, url, SESSION_SECONDS)];
+}
 async function requireUser(request, env) {
   const user = await currentUser(request, env);
   if (!user) fail(401, 'Connexion requise.');
@@ -914,7 +924,7 @@ export async function handleTeam(request, env) {
     if (method === 'GET' && path === '/api/notifications') return await notifications(request, env, url);
     const follow = path.match(/^\/api\/suivi\/([\w-]{1,64})$/);
     if (follow && method === 'GET') return await clientFollow(env, follow[1]);
-    if (method === 'GET' && path === '/api/me') return reply({ user: await requireUser(request, env) });
+    if (method === 'GET' && path === '/api/me') { const user = await requireUser(request, env); return reply({ user }, 200, await refreshSession(request, env, url)); }
     if (method === 'GET' && path === '/api/workspace') return await workspace(request, env);
     if (method === 'PUT' && path === '/api/workspace') return await importWorkspace(request, env);
     if (method === 'POST' && path === '/api/actions') return await action(request, env);
