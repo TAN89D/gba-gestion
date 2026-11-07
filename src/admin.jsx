@@ -9,6 +9,7 @@ import { Thread, requestStatus, printOrder } from './requests.jsx';
 import { spending, overspending, cashbox } from './cashbox.js';
 import { BRAND, DEMO, logoOf } from './brand.js';
 import { leaveDemo } from './demo.jsx';
+import { disablePush } from './push.js';
 import './admin.css';
 
 const TABS = [
@@ -396,6 +397,7 @@ export function AdminApp() {
   };
   useEffect(() => { document.title = 'Tableau de bord ' + (BRAND.name === 'SoBara' ? 'SoBara' : 'GBA'); load(); }, []);
   const logout = async () => {
+    await disablePush();
     if (DEMO) { await leaveDemo(); return; }
     localStorage.setItem(ADMIN_LOGOUT_KEY, '1');
     try { await api('/api/auth/logout', { method: 'POST' }); localStorage.removeItem(ADMIN_LOGOUT_KEY); } catch { /* terminée au retour du réseau */ }

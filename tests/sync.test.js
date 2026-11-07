@@ -12,7 +12,7 @@ const KEY = 'cle-de-test-avec-plus-de-trente-deux-caracteres';
 const BASE = 'https://gba.example';
 function makeEnv() {
   const db = new DatabaseSync(':memory:');
-  for (const f of ['0001_workspace.sql', '0002_team.sql', '0003_entries.sql', '0004_requests.sql', '0005_presence.sql', '0006_companies.sql', '0007_limits.sql']) db.exec(readFileSync(new URL('../migrations/' + f, import.meta.url), 'utf8'));
+  for (const f of ['0001_workspace.sql', '0002_team.sql', '0003_entries.sql', '0004_requests.sql', '0005_presence.sql', '0006_companies.sql', '0007_limits.sql', '0008_push.sql']) db.exec(readFileSync(new URL('../migrations/' + f, import.meta.url), 'utf8'));
   const wrap = (sql, args = []) => ({
     bind: (...a) => wrap(sql, a),
     first: async () => db.prepare(sql).get(...args) ?? null,

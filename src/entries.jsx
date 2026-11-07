@@ -5,6 +5,7 @@ import { fmtDate, money, today, uid, EXPENSE_CATEGORIES, PAY_METHODS } from './d
 import { ENTRY_LABELS, STATUS_LABELS } from './entries.js';
 import { reportHtml } from './report.js';
 import { Thread } from './requests.jsx';
+import { pushSupport, pushActive, enablePush } from './push.js';
 
 const SCOPES = [['Chantier', 'Pour le chantier'], ['Entreprise', 'Pour l’entreprise'], ['Personnel', 'Dépense personnelle']];
 
@@ -215,9 +216,31 @@ export function Bell() {
     <button type="button" className={'bell' + (unread ? ' on' : '')} aria-label={unread ? unread + ' nouvelle(s) notification(s)' : 'Notifications'} onClick={() => setOpen(true)}><BellIcon size={26} weight={unread ? 'fill' : 'regular'} />{unread > 0 && <span className="bell-count">{unread > 99 ? '99+' : unread}</span>}</button>
     {open && <div className="modal-backdrop" onClick={(ev) => { if (ev.target === ev.currentTarget) { markSeen(); setOpen(false); } }}><section className="modal bell-panel" role="dialog" aria-modal="true" aria-label="Notifications">
       <div className="modal-head"><h2>Notifications</h2><button type="button" className="icon" aria-label="Fermer" onClick={() => { markSeen(); setOpen(false); }}><X /></button></div>
+      <PushToggle />
       {!items.length && <p className="subtle">Rien de nouveau depuis 7 jours.</p>}
       {items.map((x) => <div key={x.id} className={'bell-item' + (x.at > seen ? ' new' : '')}><span className="bell-ico" aria-hidden="true">{ICONS[x.kind] || '🔔'}</span><div><b>{x.title}</b>{x.text && <small>{x.text}</small>}<small className="bell-when">{ago(x.at)}</small>{x.hasAudio && <AudioView id={x.entryId} />}</div></div>)}
       {items.length > 0 && <button type="button" className="secondary wide" onClick={() => { markSeen(); setOpen(false); }}>Tout est vu</button>}
     </section></div>}
   </>;
+}
+
+// « Activer les alertes » : le téléphone sonne même application fermée (notifications push).
+const PUSH_HIDE = 'gba-alertes-masque';
+export function PushToggle({ card = false }) {
+  const [state, setState] = useState('check');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [hidden, setHidden] = useState(() => { try { return card && localStorage.getItem(PUSH_HIDE) === '1'; } catch { return false; } });
+  useEffect(() => { let live = true; pushActive().then((on) => { if (live) setState(on ? 'on' : pushSupport()); }); return () => { live = false; }; }, []);
+  if (state === 'check' || hidden) return null;
+  if (state === 'on') return card ? null : <p className="push-on">🔔 Alertes activées sur ce téléphone, même application fermée.</p>;
+  if (card && state !== 'yes' && state !== 'install') return null;
+  const hide = () => { try { localStorage.setItem(PUSH_HIDE, '1'); } catch { /* sans stockage */ } setHidden(true); };
+  return <section className="install-card push-card">
+    {card && <button type="button" className="install-close" aria-label="Masquer" onClick={hide}><X size={18} /></button>}
+    <b>🔔 Recevoir les alertes même téléphone fermé</b>
+    <small>{state === 'install' ? 'Sur iPhone : installez d’abord l’application (bouton Partager, puis « Sur l’écran d’accueil »), puis ouvrez-la depuis son icône.' : state === 'denied' ? 'Les alertes sont bloquées pour ce site : autorisez-les dans les réglages du navigateur (Paramètres du site, Notifications).' : state === 'no' ? 'Ce navigateur ne permet pas les alertes. Utilisez Chrome sur Android, ou l’application installée sur iPhone.' : 'Le téléphone sonne dès qu’un problème, une demande de matériel ou un message arrive.'}</small>
+    {state === 'yes' && <button type="button" className="primary" disabled={busy} onClick={async () => { setBusy(true); setError(''); try { await enablePush(); setState('on'); } catch (x) { setError(x.message); } finally { setBusy(false); } }}>{busy ? 'Activation…' : 'Activer les alertes'}</button>}
+    {error && <p className="error" role="alert">{error}</p>}
+  </section>;
 }

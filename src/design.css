@@ -113,3 +113,5 @@
 .budget-row{border-bottom:1px solid var(--line);padding-bottom:8px;margin-bottom:8px}
 .budget-row .row{border-bottom:0}
 .budget-row .chips button{min-height:40px;padding:6px 12px;font-size:14px}
+.push-on{background:#e9f8ef;color:#126b36;border-radius:12px;padding:10px 12px;margin:0 0 12px;font-size:14px}
+.push-card{margin-bottom:14px}

@@ -6,7 +6,7 @@ import worker from '../worker.js';
 import { empty, apply, validate, due, retained, blankCompany } from '../src/domain.js';
 
 const KEY = 'cle-de-test-avec-plus-de-trente-deux-caracteres';
-const MIGRATIONS = ['0001_workspace.sql', '0002_team.sql', '0003_entries.sql', '0004_requests.sql', '0005_presence.sql', '0006_companies.sql', '0007_limits.sql'];
+const MIGRATIONS = ['0001_workspace.sql', '0002_team.sql', '0003_entries.sql', '0004_requests.sql', '0005_presence.sql', '0006_companies.sql', '0007_limits.sql', '0008_push.sql'];
 function makeEnv(extra = {}) {
   const db = new DatabaseSync(':memory:');
   for (const f of MIGRATIONS) db.exec(readFileSync(new URL('../migrations/' + f, import.meta.url), 'utf8'));

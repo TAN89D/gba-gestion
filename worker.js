@@ -2,11 +2,11 @@ import {validate} from './src/domain.js';
 import {handleTeam,keepAttachments,AttachmentSpaceError} from './server/team.js';
 import {handleDemo,resetDemo} from './server/demo.js';
 const json=(data,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
-export default {async fetch(request,env){const u=new URL(request.url);if(!u.pathname.startsWith('/api/'))return env.ASSETS.fetch(request);
+export default {async fetch(request,env,ctx){const u=new URL(request.url);if(!u.pathname.startsWith('/api/'))return env.ASSETS.fetch(request);
  // Site de démonstration : entrée sans code, et pas de sauvegarde par clé privée.
  if(env.DEMO==='1'&&u.pathname.startsWith('/api/demo/'))return handleDemo(request,env);
  if(env.DEMO==='1'&&(u.pathname==='/api/backup'||u.pathname==='/api/setup'))return json({error:'Indisponible dans la démonstration.'},403);
- if(u.pathname!=='/api/backup')return handleTeam(request,env);
+ if(u.pathname!=='/api/backup')return handleTeam(request,env,ctx);
  if(!env.BACKUP_TOKEN||env.BACKUP_TOKEN.length<32||!env.DB)return json({error:'Sauvegarde cloud non configurée. Configurez DB et BACKUP_TOKEN.'},503);
  const secret=request.headers.get('Authorization')||'';const expected='Bearer '+env.BACKUP_TOKEN;const hash=async s=>new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s)));const [a,b]=await Promise.all([hash(secret),hash(expected)]);let diff=0;for(let i=0;i<a.length;i++)diff|=a[i]^b[i];if(diff)return json({error:'Clé privée incorrecte.'},401);
  if(request.headers.get('Origin')&&request.headers.get('Origin')!==u.origin)return json({error:'Origine refusée.'},403);

@@ -4,6 +4,7 @@ import { Crown, HardHat, Wrench, Briefcase, Eye, ArrowsClockwise } from '@phosph
 import { BRAND, DEMO } from './brand.js';
 import { writeSync } from './sync.js';
 import { DEMO_SHARE_TOKEN } from './demoData.js';
+import { disablePush } from './push.js';
 
 const ROLE_KEY = 'sobara-demo-role';
 const CLEAR = ['gba-web-v3', 'gba-sync', 'gba-member', 'gba-device', 'gba-logout-pending', 'gba-cloud-revision'];
@@ -43,6 +44,7 @@ export async function enterDemo(role) {
 }
 export async function leaveDemo() {
   onlyDemo();
+  await disablePush();
   try { await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }); } catch { /* sans réseau */ }
   clearLocal();
   localStorage.removeItem(ROLE_KEY);

@@ -1,6 +1,7 @@
 import { apply, validate, blankCompany, docTotal, docHT, retained as retainedOf } from '../src/domain.js';
 import { ROLES, viewFor, canWrite, canManageTeam } from '../src/permissions.js';
 import { heldBy } from '../src/cashbox.js';
+import { pushTo, vapidKeys, validEndpoint } from './push.js';
 
 const SESSION_COOKIE = 'gba_session';
 // Entreprise d'origine du site (ses données restent dans la table workspace, ligne 1).
@@ -444,7 +445,7 @@ async function reservedOnTask(env, taskId, state, companyId) {
   const { results } = await env.DB.prepare("SELECT id,data FROM entries WHERE company_id=? AND kind='teamPayment' AND (status='pending' OR (status='approved' AND applied_at IS NULL))").bind(companyId).all();
   return results.reduce((n, row) => { const d = JSON.parse(row.data); return d.taskId === taskId && !state.teamPayments.some((p) => p.id === row.id) ? n + Number(d.amount || 0) : n; }, 0);
 }
-async function createEntry(request, env) {
+async function createEntry(request, env, ctx) {
   const user = await requireUser(request, env);
   const body = await readJson(request);
   // Un renvoi (réponse perdue) retourne la saisie déjà enregistrée, avant tout autre contrôle.
@@ -521,6 +522,7 @@ async function createEntry(request, env) {
     if (existing?.user_id !== user.id) fail(409, 'Identifiant déjà utilisé.');
   }
   const row = await env.DB.prepare(`SELECT ${ENTRY_COLUMNS} FROM entries WHERE id=?`).bind(id).first();
+  await alert(env, ctx, request, user, (u, ids) => u.role !== 'ouvrier' && entryAllowed(row, u, ids));
   return reply({ entry: publicEntry(row) }, 201);
 }
 async function listEntries(request, env) {
@@ -544,10 +546,10 @@ async function entryAudio(request, env, id) {
   if (!row || !(row.company_id === user.companyId) || !entryAllowed(row, user, ids) || !row.audio) fail(404, 'Message vocal introuvable.');
   return reply({ audio: row.audio });
 }
-async function decideEntry(request, env, id) {
+async function decideEntry(request, env, id, ctx) {
   const user = await requireManager(request, env);
   const body = await readJson(request);
-  const row = await env.DB.prepare('SELECT kind,status,project_id,data,company_id FROM entries WHERE id=?').bind(id).first();
+  const row = await env.DB.prepare('SELECT kind,status,project_id,user_id,data,company_id FROM entries WHERE id=?').bind(id).first();
   if (!row || !(row.company_id === user.companyId)) fail(404, 'Saisie introuvable.');
   const now = new Date().toISOString();
   let result;
@@ -582,6 +584,7 @@ async function decideEntry(request, env, id) {
   } else fail(400, 'Décision invalide.');
   if (result.meta.changes !== 1) fail(409, 'Cette saisie a déjà été traitée.');
   const updated = await env.DB.prepare(`SELECT ${ENTRY_COLUMNS} FROM entries WHERE id=?`).bind(id).first();
+  if (['approve', 'reject', 'resolve'].includes(body.decision)) await alert(env, ctx, request, user, (u) => u.id === row.user_id);
   return reply({ entry: publicEntry(updated) });
 }
 async function entriesToApply(request, env) {
@@ -625,7 +628,7 @@ function validItems(value) {
     return { description, quantity, unit: shortText(x?.unit, 20, 'Unité') };
   });
 }
-async function createRequest(request, env) {
+async function createRequest(request, env, ctx) {
   const user = await requireUser(request, env);
   const body = await readJson(request);
   const validId = typeof body.id === 'string' && /^[\w-]{8,64}$/.test(body.id);
@@ -648,6 +651,7 @@ async function createRequest(request, env) {
     .bind(id, body.projectId, user.id, user.name, JSON.stringify(items), shortText(body.note, 1000, 'Note'), status, JSON.stringify(history), now, now, user.companyId).run();
   const row = await env.DB.prepare(`SELECT ${REQUEST_COLUMNS} FROM material_requests WHERE id=?`).bind(id).first();
   if (row.user_id !== user.id || row.company_id !== user.companyId) fail(409, 'Identifiant déjà utilisé.');
+  await alert(env, ctx, request, user, (u, ids) => u.role !== 'ouvrier' && requestAllowed(row, u, ids));
   return reply({ request: publicRequest(row, user) }, 201);
 }
 async function listRequests(request, env) {
@@ -656,7 +660,7 @@ async function listRequests(request, env) {
   const { results } = await env.DB.prepare(`SELECT ${REQUEST_COLUMNS} FROM material_requests WHERE company_id=? AND (status IN ('besoin','demande','commande','livre') OR id IN (SELECT id FROM material_requests WHERE company_id=? ORDER BY updated_at DESC LIMIT 300)) ORDER BY updated_at DESC`).bind(user.companyId, user.companyId).all();
   return reply({ requests: results.filter((row) => requestAllowed(row, user, ids)).map((row) => publicRequest(row, user)) });
 }
-async function stepRequest(request, env, id) {
+async function stepRequest(request, env, id, ctx) {
   const user = await requireUser(request, env);
   const body = await readJson(request);
   const row = await env.DB.prepare('SELECT * FROM material_requests WHERE id=? AND company_id=?').bind(id, user.companyId).first();
@@ -703,6 +707,7 @@ async function stepRequest(request, env, id) {
     .bind(to, JSON.stringify(history), now, ...keys.map((k) => sets[k]), id, row.status).run();
   if (done.meta.changes !== 1) fail(409, 'Cette demande a déjà avancé : actualisez.');
   const updated = await env.DB.prepare(`SELECT ${REQUEST_COLUMNS} FROM material_requests WHERE id=?`).bind(id).first();
+  await alert(env, ctx, request, user, (u, ids) => requestAllowed(updated, u, ids) && (u.role !== 'ouvrier' || updated.user_id === u.id));
   return reply({ request: publicRequest(updated, user) });
 }
 // Ce que le téléphone de la direction doit inscrire dans ses données : le bon de commande, puis la réception.
@@ -738,24 +743,27 @@ async function listMessages(request, env, id) {
   const { results } = await env.DB.prepare('SELECT id,user_id,user_name,role,text,created_at FROM messages WHERE thread_id=? AND company_id=? ORDER BY created_at DESC, rowid DESC LIMIT 300').bind(id, user.companyId).all();
   return reply({ messages: results.reverse().map((m) => ({ id: m.id, userName: m.user_name, role: m.role, text: m.text, at: m.created_at, mine: m.user_id === user.id })) });
 }
-async function postMessage(request, env, id) {
+async function postMessage(request, env, id, ctx) {
   const user = await requireUser(request, env);
   const body = await readJson(request);
   if (!await threadAllowed(env, user, id)) fail(404, 'Discussion introuvable.');
   const text = shortText(body.text, 1000, 'Message');
   if (!text) fail(400, 'Écrivez un message.');
   const msgId = typeof body.id === 'string' && /^[\w-]{8,64}$/.test(body.id) ? body.id : crypto.randomUUID();
-  await env.DB.prepare('INSERT OR IGNORE INTO messages(id,thread_id,user_id,user_name,role,text,created_at,company_id) VALUES(?,?,?,?,?,?,?,?)')
+  const inserted = await env.DB.prepare('INSERT OR IGNORE INTO messages(id,thread_id,user_id,user_name,role,text,created_at,company_id) VALUES(?,?,?,?,?,?,?,?)')
     .bind(msgId, id, user.id, user.name, user.role, text, new Date().toISOString(), user.companyId).run();
   const saved = await env.DB.prepare('SELECT user_id,thread_id FROM messages WHERE id=?').bind(msgId).first();
   if (saved.user_id !== user.id || saved.thread_id !== id) fail(409, 'Identifiant déjà utilisé.');
+  const e = await env.DB.prepare('SELECT kind,project_id,user_id,data FROM entries WHERE id=? AND company_id=?').bind(id, user.companyId).first();
+  const r = e ? null : await env.DB.prepare('SELECT project_id,user_id FROM material_requests WHERE id=? AND company_id=?').bind(id, user.companyId).first();
+  if (inserted.meta.changes === 1) await alert(env, ctx, request, user, (u, ids) => (e ? entryAllowed(e, u, ids) : requestAllowed(r, u, ids)) && (u.role !== 'ouvrier' || (e || r).user_id === u.id));
   return reply({ ok: true }, 201);
 }
 
 // ---- Pointage : « Je suis arrivé » sur le chantier, avec l'heure du serveur et la position si elle est donnée ----
 const PRESENCE_ROLES = ['gestionnaire', 'chef', 'ouvrier'];
 const publicPresence = (r) => ({ id: r.id, projectId: r.project_id, userId: r.user_id, userName: r.user_name, role: r.role, date: r.date, time: r.time, lat: r.lat, lng: r.lng, note: r.note || '' });
-async function createPresence(request, env) {
+async function createPresence(request, env, ctx) {
   const user = await requireUser(request, env);
   if (!PRESENCE_ROLES.includes(user.role)) fail(403, 'Le pointage est réservé à l’équipe de chantier.');
   const body = await readJson(request);
@@ -771,9 +779,10 @@ async function createPresence(request, env) {
   let lat = null, lng = null;
   const la = Number(body.lat), lo = Number(body.lng);
   if (body.lat != null && body.lng != null && Number.isFinite(la) && Number.isFinite(lo) && Math.abs(la) <= 90 && Math.abs(lo) <= 180) { lat = Math.round(la * 100000) / 100000; lng = Math.round(lo * 100000) / 100000; }
-  await env.DB.prepare('INSERT OR IGNORE INTO presences(id,project_id,user_id,user_name,role,date,time,lat,lng,note,created_at,company_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
+  const added = await env.DB.prepare('INSERT OR IGNORE INTO presences(id,project_id,user_id,user_name,role,date,time,lat,lng,note,created_at,company_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
     .bind(id, body.projectId, user.id, user.name, user.role, date, now.toISOString().slice(11, 16), lat, lng, shortText(body.note, 200, 'Note'), now.toISOString(), user.companyId).run();
   const row = await env.DB.prepare('SELECT * FROM presences WHERE user_id=? AND project_id=? AND date=?').bind(user.id, body.projectId, date).first();
+  if (added.meta.changes === 1) await alert(env, ctx, request, user, (u, ids) => u.role !== 'ouvrier' && (seesMoney(u) || ids.has(row.project_id)));
   return reply({ presence: publicPresence(row) }, 201);
 }
 async function listPresence(request, env, url) {
@@ -784,6 +793,40 @@ async function listPresence(request, env, url) {
   // Direction et gestionnaire voient tout le monde ; le chef, ses chantiers ; l'ouvrier, lui-même.
   const visible = results.filter((r) => (seesMoney(user) ? true : user.role === 'chef' ? ids.has(r.project_id) : r.user_id === user.id));
   return reply({ date, presences: visible.map(publicPresence) });
+}
+
+// ---- Notifications push : à chaque action, on réveille les téléphones des personnes concernées ----
+async function alert(env, ctx, request, actor, test) {
+  const job = (async () => {
+    const { results } = await env.DB.prepare('SELECT DISTINCT u.* FROM users u JOIN push_subscriptions p ON p.user_id=u.id WHERE u.company_id=? AND u.active=1 AND u.id<>?').bind(actor.companyId, actor.id).all();
+    if (!results.length) return;
+    const current = await readWorkspace(env, actor.companyId);
+    const targets = results.map(publicUser).filter((u) => {
+      const ids = new Set(current ? viewFor(current.data, u).projects.map((p) => p.id) : []);
+      try { return test(u, ids); } catch { return false; }
+    });
+    await pushTo(env, targets.map((u) => u.id), new URL(request.url).origin);
+  })().catch((e) => console.error('push', e?.message));
+  if (ctx?.waitUntil) ctx.waitUntil(job); else await job;
+}
+async function pushKey(request, env) {
+  await requireUser(request, env);
+  return reply({ key: (await vapidKeys(env)).pub });
+}
+async function pushSubscribe(request, env) {
+  const user = await requireUser(request, env);
+  const body = await readJson(request);
+  if (!validEndpoint(body.endpoint)) fail(400, 'Abonnement aux notifications invalide.');
+  await env.DB.prepare('INSERT OR REPLACE INTO push_subscriptions(endpoint,user_id,company_id,created_at) VALUES(?,?,?,?)').bind(body.endpoint, user.id, user.companyId, new Date().toISOString()).run();
+  // Au plus 5 téléphones par personne : les plus anciens sont oubliés.
+  await env.DB.prepare('DELETE FROM push_subscriptions WHERE user_id=? AND endpoint NOT IN (SELECT endpoint FROM push_subscriptions WHERE user_id=? ORDER BY created_at DESC LIMIT 5)').bind(user.id, user.id).run();
+  return reply({ ok: true }, 201);
+}
+async function pushUnsubscribe(request, env) {
+  const user = await requireUser(request, env);
+  const body = await readJson(request);
+  await env.DB.prepare('DELETE FROM push_subscriptions WHERE endpoint=? AND user_id=?').bind(String(body.endpoint || ''), user.id).run();
+  return reply({ ok: true });
 }
 
 // ---- Notifications : ce qui est nouveau pour cette personne depuis sa dernière visite ----
@@ -899,7 +942,7 @@ async function clientFollow(env, token) {
   return reply(view);
 }
 
-export async function handleTeam(request, env) {
+export async function handleTeam(request, env, ctx) {
   const url = new URL(request.url);
   const path = url.pathname;
   const method = request.method;
@@ -919,7 +962,10 @@ export async function handleTeam(request, env) {
     if (method === 'GET' && path === '/api/auth/google/callback') return await googleCallback(request, env, url);
     if (method === 'POST' && path === '/api/auth/logout') return await logout(request, env, url);
     if (method === 'GET' && path === '/api/config') return reply({ google: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET), signup: env.SIGNUP === '1' });
-    if (method === 'POST' && path === '/api/presence') return await createPresence(request, env);
+    if (method === 'POST' && path === '/api/presence') return await createPresence(request, env, ctx);
+    if (method === 'GET' && path === '/api/push/key') return await pushKey(request, env);
+    if (method === 'POST' && path === '/api/push/subscribe') return await pushSubscribe(request, env);
+    if (method === 'POST' && path === '/api/push/unsubscribe') return await pushUnsubscribe(request, env);
     if (method === 'GET' && path === '/api/presence') return await listPresence(request, env, url);
     if (method === 'GET' && path === '/api/notifications') return await notifications(request, env, url);
     const follow = path.match(/^\/api\/suivi\/([\w-]{1,64})$/);
@@ -930,23 +976,23 @@ export async function handleTeam(request, env) {
     if (method === 'POST' && path === '/api/actions') return await action(request, env);
     if (method === 'GET' && path === '/api/users') return await listUsers(request, env);
     if (method === 'POST' && path === '/api/users') return await createUser(request, env);
-    if (method === 'POST' && path === '/api/entries') return await createEntry(request, env);
+    if (method === 'POST' && path === '/api/entries') return await createEntry(request, env, ctx);
     if (method === 'GET' && path === '/api/entries') return await listEntries(request, env);
     if (method === 'GET' && path === '/api/entries/to-apply') return await entriesToApply(request, env);
     const entry = path.match(/^\/api\/entries\/([\w-]{1,64})\/(photo|audio|decision|applied)$/);
     if (entry && method === 'GET' && entry[2] === 'photo') return await entryPhoto(request, env, entry[1]);
     if (entry && method === 'GET' && entry[2] === 'audio') return await entryAudio(request, env, entry[1]);
-    if (entry && method === 'POST' && entry[2] === 'decision') return await decideEntry(request, env, entry[1]);
+    if (entry && method === 'POST' && entry[2] === 'decision') return await decideEntry(request, env, entry[1], ctx);
     if (entry && method === 'POST' && entry[2] === 'applied') return await markApplied(request, env, entry[1]);
-    if (method === 'POST' && path === '/api/requests') return await createRequest(request, env);
+    if (method === 'POST' && path === '/api/requests') return await createRequest(request, env, ctx);
     if (method === 'GET' && path === '/api/requests') return await listRequests(request, env);
     if (method === 'GET' && path === '/api/requests/to-apply') return await requestsToApply(request, env);
     const req = path.match(/^\/api\/requests\/([\w-]{1,64})\/(step|applied)$/);
-    if (req && method === 'POST' && req[2] === 'step') return await stepRequest(request, env, req[1]);
+    if (req && method === 'POST' && req[2] === 'step') return await stepRequest(request, env, req[1], ctx);
     if (req && method === 'POST' && req[2] === 'applied') return await markRequestApplied(request, env, req[1]);
     const thread = path.match(/^\/api\/threads\/([\w-]{1,64})$/);
     if (thread && method === 'GET') return await listMessages(request, env, thread[1]);
-    if (thread && method === 'POST') return await postMessage(request, env, thread[1]);
+    if (thread && method === 'POST') return await postMessage(request, env, thread[1], ctx);
     const member = path.match(/^\/api\/users\/([\w-]{1,100})(\/invite)?$/);
     if (member && method === 'PATCH' && !member[2]) return await updateUser(request, env, member[1]);
     if (member && method === 'POST' && member[2]) return await createInvite(request, env, member[1]);
