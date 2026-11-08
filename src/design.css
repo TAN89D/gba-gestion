@@ -139,3 +139,5 @@
 .guide-step svg{margin-left:auto}
 .whatsapp.monday{border-width:2px;background:#effaf3}
 img[src$="sobara-logo.png"]{border-radius:22%}
+.flows b{font-size:clamp(16px,5vw,21px);white-space:normal}
+.flows>div{min-width:0}
