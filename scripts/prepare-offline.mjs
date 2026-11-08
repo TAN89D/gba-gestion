@@ -1,7 +1,7 @@
 import{readdir,writeFile}from'node:fs/promises';import{existsSync}from'node:fs';
 // Le dossier construit est « dist » pour l'application, « dist-demo » ou « dist-sobara » pour SoBara.
 const dir=process.argv[2]||'dist';
-const assets=await readdir(dir+'/assets');const base=['/','/index.html','/logo.jpg','/icon-192.png','/icon-512.png','/manifest.webmanifest','/sobara-icon.svg','/sobara-192.png','/sobara-512.png','/sobara.webmanifest','/sobara-app.webmanifest'].filter(p=>p==='/'||existsSync(dir+p));const paths=[...base,...assets.map(x=>'/assets/'+x)];const version='gba-'+Date.now();
+const assets=await readdir(dir+'/assets');const base=['/','/index.html','/logo.jpg','/icon-192.png','/icon-512.png','/manifest.webmanifest','/sobara-logo.png','/sobara-192.png','/sobara-512.png','/sobara-maskable-192.png','/sobara-maskable-512.png','/sobara.webmanifest','/sobara-app.webmanifest'].filter(p=>p==='/'||existsSync(dir+p));const paths=[...base,...assets.map(x=>'/assets/'+x)];const version='gba-'+Date.now();
 const icon=dir==='dist'?'/icon-192.png':'/sobara-192.png';
 await writeFile(dir+'/sw.js',`const CACHE=${JSON.stringify(version)},FILES=${JSON.stringify(paths)},ICON=${JSON.stringify(icon)};
 self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(FILES))));
