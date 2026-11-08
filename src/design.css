@@ -121,3 +121,20 @@
 .list-tools .chips small{display:inline;margin-left:4px;color:inherit;opacity:.75}
 .sort-select{display:flex;align-items:center;gap:8px;font-weight:600;font-size:14px}
 .sort-select select{flex:1;min-height:42px;border:1px solid var(--line);border-radius:10px;padding:6px 10px;background:#fff}
+/* Simplification */
+.add-menu{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:10px}
+.add-menu button{justify-content:flex-start;text-align:left;gap:14px;padding:14px;min-height:72px;border-color:#bfd8f5;border-radius:14px}
+.add-menu button>span:first-child{display:grid;place-items:center;width:48px;height:48px;border-radius:50%;flex:none}
+.add-menu .orange{background:#fff1e0}.add-menu .green{background:#e6f7ee}.add-menu .blue{background:#e8f1fc;color:var(--blue)}
+.add-menu b{display:block;font-size:16px}
+.ptabs{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;background:#eef3fa;border-radius:12px;padding:4px;margin:12px 0 16px;position:sticky;top:0;z-index:4}
+.ptabs button{border:0;background:none;min-height:44px;border-radius:9px;font-size:15px}
+.ptabs button.on{background:#fff;box-shadow:0 1px 4px #10213b22;color:var(--blue)}
+.balance .exact{color:#d6e6fb;margin-top:6px;font-size:14px}
+.start-guide{border:1px solid #bfd8f5;background:#f6faff;border-radius:14px;padding:12px 14px;margin:0 0 18px;display:grid;gap:4px}
+.row-between{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.guide-step{justify-content:flex-start;gap:10px;border:0;background:none;min-height:42px;padding:6px 2px;text-align:left;font-weight:600}
+.guide-step.done{opacity:.6;text-decoration:line-through}
+.guide-step span{width:22px;color:var(--blue);font-weight:800}
+.guide-step svg{margin-left:auto}
+.whatsapp.monday{border-width:2px;background:#effaf3}

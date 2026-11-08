@@ -252,3 +252,14 @@ test('budget donné par erreur : on corrige le montant ou on l’annule, et les 
   assert.equal(balance(s, 'main'), 1000000);
   assert.equal(validate(s), s);
 });
+
+test('résumé de la semaine : 7 jours de dépenses et de paiements', async () => {
+  const { weekReport } = await import('../src/cashbox.js');
+  let s = sample();
+  s = spend(s, 'semaine', 30000, 'Chantier', { projectId: 'p1' });
+  s = spend(s, 'vieux', 99000, 'Chantier', { projectId: 'p1', date: '2026-10-01' });
+  const text = weekReport(s, D);
+  assert.ok(text.includes('Semaine du 30/10/2026 au 05/11/2026'));
+  assert.match(text, /Dépenses : 30\s000 F \(1\)/u);
+  assert.ok(!text.includes('99'), 'les dépenses hors de la semaine ne comptent pas');
+});
