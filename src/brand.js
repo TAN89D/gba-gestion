@@ -9,4 +9,4 @@ export const BRAND = DEMO || SAAS
 // Le logo de l'entreprise s'il a été ajouté, sinon celui de l'application.
 export const logoOf = (settings) => (/^data:image\/(png|jpeg|webp);base64,/.test(settings?.logo || '') ? settings.logo : BRAND.logo);
 // Numéro de version affiché dans Paramètres (à changer à chaque publication).
-export const APP_VERSION = '3.2.0';
+export const APP_VERSION = '3.3.0';
