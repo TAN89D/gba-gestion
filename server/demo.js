@@ -9,7 +9,7 @@ const reply = (data, status = 200, cookies = []) => {
   return new Response(JSON.stringify(data), { status, headers });
 };
 const ROLES = ['direction', 'gestionnaire', 'chef', 'ouvrier'];
-const TABLES = ['messages', 'material_requests', 'entries', 'presences', 'sessions', 'devices', 'invites', 'users', 'workspace', 'workspaces', 'companies'];
+const TABLES = ['messages', 'material_requests', 'entries', 'presences', 'push_subscriptions', 'sessions', 'devices', 'invites', 'users', 'workspace', 'workspaces', 'companies'];
 
 export async function resetDemo(env, now = new Date()) {
   for (const t of TABLES) await env.DB.prepare(`DELETE FROM ${t}`).run();

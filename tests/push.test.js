@@ -127,3 +127,14 @@ test('push : jamais d’alerte vers une autre entreprise', async () => {
     assert.equal(push.calls.length, 0);
   } finally { push.restore(); }
 });
+
+test('démo : la remise à zéro marche même avec des téléphones abonnés aux alertes', async () => {
+  const env = makeEnv({ DEMO: '1' });
+  const chef = cookieOf(await raw(env, 'POST', '/api/demo/enter', { role: 'chef' }));
+  assert.equal((await raw(env, 'POST', '/api/push/subscribe', { endpoint: FCM('demo') }, chef)).status, 201);
+  let job;
+  await worker.scheduled({}, env, { waitUntil: (p) => { job = p; } });
+  await job;
+  assert.equal((await raw(env, 'GET', '/api/me', undefined, chef)).status, 401, 'tout est reparti de zéro');
+  assert.equal((await raw(env, 'POST', '/api/demo/enter', { role: 'chef' })).status, 200);
+});
